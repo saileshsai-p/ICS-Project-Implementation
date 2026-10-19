@@ -16,6 +16,8 @@ SecuShare enables users to share confidential files locally without relying on e
 2. **AES-256-GCM Encryption at Rest**: Envelope encryption using unique random 32-byte Data Encryption Keys (DEKs) wrapped under a server-side Master Key.
 3. **Automatic Expiry Cleanup**: Dedicated background worker that reconciles and physically removes expired files and temporary remnants.
 4. **File Integrity Verification using SHA-256**: Pre-encryption hashing and post-decryption timing-safe verification to prevent undetected tampering or bit-rot.
+5. **User Registration, Login & Persistent Sessions**: Server-managed persistent sessions stored in `data/sessions.json` surviving server restarts, timing-safe scrypt authentication, and rate limiting.
+6. **Recipient-Based File Authorization**: Optional email-restricted share links allowing uploaders to limit access to authorized recipient accounts.
 
 ### Architectural Principles
 - **100% Self-Contained**: Runs locally using Node.js ES modules and native built-ins (`node:crypto`, `node:fs/promises`, `node:stream`).
@@ -71,6 +73,38 @@ SecuShare enables users to share confidential files locally without relying on e
   - `crypto.timingSafeEqual` verifies that the recovered file matches the upload digest byte-for-byte.
   - If a mismatch is detected, the temporary file is unlinked, no data is sent, and an internal diagnostic error is logged.
 
+### Feature E: User Authentication & Persistent Sessions
+- **Registration**:
+  - Secure account creation via email and password (minimum 8 characters).
+  - Passwords hashed using `crypto.scrypt` with a unique 16-byte random salt and 64-byte key length. Plaintext passwords are never stored.
+  - Email uniqueness enforced on normalized lowercase addresses (`alice@example.com` is identical to `  Alice@Example.com `).
+- **Persistent Server-Side Sessions**:
+  - Sessions are managed server-side and persisted in `data/sessions.json` so they survive server restarts.
+  - 256-bit unguessable random session identifiers rotated upon login to prevent session fixation.
+  - Configurable lifetime via `SESSION_LIFETIME_MS` (default: **7 days**).
+  - Secure `HttpOnly`, `SameSite=Lax`, `Path=/` cookie configuration.
+- **Login Rate Limiting**:
+  - Repeated failed login attempts are rate-limited via sliding window (5 attempts per 5 minutes) returning HTTP `429 Too Many Requests`.
+- **Logout**:
+  - Invalidates the server-side session record in `data/sessions.json` and clears the cookie.
+
+### Feature F: Recipient-Based File Authorization
+- **Optional Restricted Links**:
+  - Uploader can optionally specify one or more authorized recipient email addresses during file upload.
+  - Normalizes and deduplicates addresses (case-insensitive, trims surrounding whitespace).
+  - Anonymous uploads remain completely supported; uploaders do not need an account.
+- **Public vs. Restricted Links**:
+  - **Public Link** (no recipients specified): Accessible to anonymous visitors without login. Password, expiry, and download limits still apply.
+  - **Restricted Link** (recipients specified): Requires authentication. Logged-out visitors are prompted to log in or register. Only users whose account email matches an authorized recipient can download the file.
+- **Pending Permissions**:
+  - Uploaders can authorize email addresses of recipients who have not yet registered. When the recipient subsequently creates an account, access is granted automatically.
+- **Dual-Protection Flow (Recipient Authorization + File Password)**:
+  - If a restricted link also has a file password, the user must satisfy **both** requirements: be an authorized recipient **and** supply the correct file password. Neither bypasses the other.
+- **Safe Return Redirects**:
+  - Following login or registration, users are automatically returned to the intended share link. Open redirects are strictly blocked; only safe same-origin relative URLs are accepted.
+- **Address-Matching Disclaimer**:
+  - Authorization operates strictly by address matching. Email verification is intentionally not implemented.
+
 ---
 
 ## 3. Technology Stack
@@ -91,22 +125,24 @@ SecuShare enables users to share confidential files locally without relying on e
 ## 4. Architecture & Repository File Tree
 
 ```
-ICS_PROJECT/
-├── .env.example               # Documented environment variables and master key setup
-├── .gitignore                 # Excludes secrets (.env, *.key), temp files, and node_modules
-├── package.json               # Dependencies, scripts (start, dev, test, migrate)
-├── server.js                  # App bootstrap, storage initialization, cleanup worker lifecycle
+├── data/
+│   ├── metadata.json          # Persistent JSON store for file records
+│   ├── users.json             # Persistent JSON store for user accounts (scrypt hashes)
+│   └── sessions.json          # Persistent JSON store for active server-side sessions
 ├── middleware/
+│   ├── authMiddleware.js      # Cookie parsing, persistent session authentication, requireAuth
 │   ├── errorHandler.js        # Global error interceptor (prevents stack/path leakage)
-│   ├── rateLimiter.js         # Sliding-window brute-force limiter for password attempts
+│   ├── rateLimiter.js         # Sliding-window brute-force limiter for passwords & logins
 │   ├── securityHeaders.js     # Strict CSP, nosniff, DENY framing headers
 │   └── uploadValidation.js    # Multer configuration with 50 MB default ceiling
 ├── routes/
+│   ├── auth.js                # POST /api/auth/register, /login, /logout, GET /me
 │   ├── download.js            # GET & POST /api/files/:token/download (decryption & verification)
-│   ├── pages.js               # HTML page delivery (/, /share/:token)
-│   └── upload.js              # POST /api/files (integrity hashing, AES encryption, metadata)
+│   ├── pages.js               # HTML page delivery (/, /share/:token, /login, /register)
+│   └── upload.js              # POST /api/files (integrity hashing, AES encryption, recipients)
 ├── services/
-│   ├── accessService.js       # Central authorization gate (expiry, allowance, password, status)
+│   ├── accessService.js       # Central authorization gate (expiry, allowance, password, recipient check)
+│   ├── authService.js         # Open redirect validation and safe URL destination helpers
 │   ├── cleanupService.js      # Background worker for expiry cleanup and restart recovery
 │   ├── encryptionService.js   # AES-256-GCM envelope encryption, key wrapping, safe decryption
 │   ├── fileIntegrityService.js# Streaming SHA-256 calculation and timing-safe comparison
@@ -115,27 +151,28 @@ ICS_PROJECT/
 │   ├── metadataService.js     # Atomic metadata serialization, backward-compatible defaults
 │   ├── migrationService.js    # Safe migration of legacy plaintext files to Version 2
 │   ├── operationCoordinator.js# In-memory download lease tracking to coordinate with cleanup
-│   └── passwordService.js     # Salted scrypt hashing and timing-safe password verification
-├── scripts/
-│   ├── benchmark.js           # Empirical performance measurement and security trial runner
-│   └── migrate.js             # CLI utility to upgrade legacy plaintext files in place
+│   ├── passwordService.js     # Salted scrypt hashing and timing-safe password verification
+│   ├── sessionService.js      # File-backed server session store with 7-day default expiry
+│   └── userService.js         # User registration, email normalization, scrypt verification
 ├── public/
-│   ├── index.html             # Upload homepage with download policy selector & result card
+│   ├── index.html             # Upload homepage with recipient field & result card
 │   ├── download.html          # Recipient download page with security & allowance badges
+│   ├── login.html             # User login page with redirect destination handling
+│   ├── register.html          # User registration page with min-length validation
 │   ├── css/
 │   │   └── style.css          # Cybersecurity theme (navy/slate/cyan, responsive)
 │   └── js/
-│       ├── download.js        # Recipient download logic, one-time allowance handling
-│       └── upload.js          # Drag-and-drop, upload progress, policy live preview
+│       ├── auth.js            # Client-side session state, navbar injection, and logout
+│       ├── download.js        # Recipient download logic, auth required/denied states
+│       └── upload.js          # Drag-and-drop, upload progress, recipient list parsing
 ├── storage/
 │   ├── files/                 # Permanent private encrypted storage (AES-256-GCM ciphertext)
 │   ├── quarantine/            # Reserved for future ClamAV malware quarantine
 │   └── temp/                  # Multer holding directory and verified decryption staging
-├── data/
-│   └── metadata.json          # Persistent JSON store for file records
 ├── tests/
-│   ├── app.test.js            # Baseline test suite (17 tests) & test runner entrypoint
-│   └── v2.test.js             # Version 2 security test suite (24 tests across Features A-D)
+│   ├── app.test.js            # Main test runner entrypoint & baseline suite (16 tests)
+│   ├── v2.test.js             # Version 2 security test suite (24 tests across Features A-D)
+│   └── auth_authorization.test.js # Authentication & recipient authorization suite (46 tests)
 └── README.md                  # Comprehensive technical documentation & experimental evaluation
 ```
 
@@ -227,10 +264,10 @@ The test suite runs using Node's native test runner (`node:test`) and spins up t
 npm test
 ```
 
-### Verified Test Results (41 of 41 Passing):
+### Verified Test Results (86 of 86 Passing):
 
 ```
-✔ Suite: Secure File Sharing Baseline Implementation (17 tests)
+✔ Suite: Secure File Sharing Baseline Implementation (16 tests)
   ✔ 1. Upload a valid file
   ✔ 2. Reject a missing file
   ✔ 3. Reject a file that exceeds the configured size limit (50MB)
@@ -273,7 +310,53 @@ npm test
     ✔ D2. Modified expected digest triggers integrity check failure and rejects download
     ✔ D3. verifySha256Digest rejects invalid lengths, non-hex strings, and mismatched digests
 
-Total: 41 tests passed (0 failed, 0 skipped, duration ~1.3s)
+✔ Suite: SecuShare Authentication & Recipient Authorization (46 tests)
+  ▶ Section 1: Registration and Accounts (10 tests)
+    ✔ 1. Successful registration creates account and returns 201
+    ✔ 2. Duplicate exact email registration is rejected with 409
+    ✔ 3. Duplicate rejection when capitalization differs
+    ✔ 4. Duplicate rejection when surrounding whitespace differs
+    ✔ 5. Passwords are never stored in plaintext
+    ✔ Register second user bob@example.com
+    ✔ 6. Correct password login succeeds and returns session cookie
+    ✔ 7. Incorrect password login fails with generic 401
+    ✔ 8. Invalid input rejected safely (short password, bad email syntax)
+    ✔ 9. Repeated failed logins are rate-limited with 429
+  ▶ Section 2: Persistent Server Sessions (6 tests)
+    ✔ 10. Successful login creates a server-managed session stored in sessions.json
+    ✔ 11. Authenticated session remains valid on /api/auth/me
+    ✔ 12. Expired sessions are rejected and invalidated
+    ✔ 13. Logout invalidates the session on the server
+    ✔ 14. An invalidated session cannot access /api/auth/me
+    ✔ 15. Session cookie sets HttpOnly and SameSite attributes
+  ▶ Section 3: Public Links Remain Public (4 tests)
+    ✔ 16. Anonymous upload without login works
+    ✔ 17. Public link can be downloaded without login
+    ✔ 18. Public link with file password requires password from anonymous visitor
+    ✔ 19. Public one-time link enforces download limit
+  ▶ Section 4: Restricted Links and Recipient Authorization (10 tests)
+    ✔ 20. Logged-out visitor cannot download restricted file (401)
+    ✔ 21. Logged-out visitor receives 401 with redirectUrl on metadata query
+    ✔ 22. Redirect flow preserves valid relative destination
+    ✔ 23. Redirect validation prevents open redirects
+    ✔ 24. Authorized user (Alice) can access metadata and download file
+    ✔ 25. Unauthorized logged-in user (Bob) receives 403 Forbidden
+    ✔ 26. Recipient authorization ignores case and whitespace differences
+    ✔ 27. Pending recipient permission works when user registers later
+    ✔ 28-30. File password + Recipient authorization both required
+    ✔ 31. Protected file bytes are never returned on failed authorization
+  ▶ Section 5: Existing Security and Lifecycle Preservation (9 tests)
+    ✔ 32. Expiry enforcement rejects expired restricted files with 410
+    ✔ 33. Download limits still enforced on restricted files
+    ✔ 34. One-time download allows single access on restricted file
+    ✔ 35. Concurrent requests cannot bypass one-time download limit
+    ✔ 36. AES-256-GCM encryption at rest and SHA-256 integrity preserved
+    ✔ 37. Tampered SHA-256 digest prevents file delivery
+    ✔ 38. not_scanned scan status preserved and not reported clean
+    ✔ 39. INFECTED file is blocked by accessService with 403
+    ✔ 40. Share links are immutable: PATCH, PUT, DELETE routes do not exist (404)
+
+Total: 86 tests passed (0 failed, 0 skipped, duration ~2.5s)
 ```
 
 ---

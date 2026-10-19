@@ -1,0 +1,30 @@
+[
+  {
+    "id": "ea8572e0-2c3b-44fd-905e-33e04d2682a0",
+    "email": "alice@example.com",
+    "passwordHash": "6c5c9ae55b9c754b9850aeb55cc760878c13ff6b326ae2ff9c15930adf3bc2b70439de88173ccb5002bf7738d0428829b9e6465d70c89254f050abbdafec8025",
+    "passwordSalt": "a7fb084fed21149c4295e268701d072b",
+    "createdAt": "2026-10-19T13:57:16.037Z"
+  },
+  {
+    "id": "80309d51-440e-49e8-8e13-1b8fd17628b2",
+    "email": "bob@example.com",
+    "passwordHash": "cf76d2358c42c4620a8da314591e2d8c914a6a412b2032487fcdde0a75eefb67979ef8c039a9f8196419959c54ded5548d8b0f8ddf2b480168b99f1989ff3d7b",
+    "passwordSalt": "0314a12030a604262fc2a28c50016ae2",
+    "createdAt": "2026-10-19T13:57:16.090Z"
+  },
+  {
+    "id": "145aac69-3773-484d-99ec-11d519e34af4",
+    "email": "charlie@future-recipient.com",
+    "passwordHash": "535434b91bd65046248dd3bbd6fb4a426a5c1da011d2b04b30dd73df3ef20623c3e78b7c72787c0cc32f928ef7812761b03b5263c6a77b61c3975165a76d8c1c",
+    "passwordSalt": "ac0b22dd7c8e0cf6c254cafa9a0c334a",
+    "createdAt": "2026-10-19T13:57:16.685Z"
+  },
+  {
+    "id": "c0f5e18f-dabc-4da8-8bd2-ea9c20900d5e",
+    "email": "abc@gmail.com",
+    "passwordHash": "00804e3205f4f8138a69a34bacfb421e9b1e98ce09448cf721f4ee707d9c8f74a9ec30e0d97fe8642498381648f0f291785c07a9e89fffeec4fbdcb2f5216384",
+    "passwordSalt": "2fef5fb5a43fc0fb02d67d3accdc266f",
+    "createdAt": "2026-10-19T13:58:18.209Z"
+  }
+]

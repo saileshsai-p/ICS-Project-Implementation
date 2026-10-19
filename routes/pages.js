@@ -24,4 +24,20 @@ router.get('/share/:token', (req, res) => {
   res.sendFile(path.join(PUBLIC_DIR, 'download.html'));
 });
 
+/**
+ * GET /login
+ * User Login Page
+ */
+router.get('/login', (req, res) => {
+  res.sendFile(path.join(PUBLIC_DIR, 'login.html'));
+});
+
+/**
+ * GET /register
+ * User Registration Page
+ */
+router.get('/register', (req, res) => {
+  res.sendFile(path.join(PUBLIC_DIR, 'register.html'));
+});
+
 export default router;

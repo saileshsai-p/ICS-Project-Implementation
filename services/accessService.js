@@ -1,6 +1,7 @@
 import { fileExists, getSafeFilePath } from './fileService.js';
 import { verifyPassword } from './passwordService.js';
 import { SCAN_STATUS } from './malwareScanner.js';
+import { normalizeEmail } from './userService.js';
 
 export const FILE_STATUS = {
   ACTIVE: 'active',
@@ -16,9 +17,10 @@ export const FILE_STATUS = {
  * 
  * @param {Object} record - File metadata record from metadataService
  * @param {string|null} providedPassword - Plaintext password attempt (if any)
- * @returns {Promise<{ allowed: boolean, reason?: string, status?: number, filePath?: string }>}
+ * @param {Object|null} currentUser - Authenticated user object { id, email } (if logged in)
+ * @returns {Promise<{ allowed: boolean, reason?: string, status?: number, filePath?: string, authRequired?: boolean, accessDenied?: boolean }>}
  */
-export async function canDownload(record, providedPassword = null) {
+export async function canDownload(record, providedPassword = null, currentUser = null) {
   if (!record) {
     return {
       allowed: false,
@@ -60,7 +62,33 @@ export async function canDownload(record, providedPassword = null) {
     }
   }
 
-  // 3. Scan status check (Centralized hook for future ClamAV integration)
+  // 4. Recipient authorization check (Feature G: Restricted links)
+  if (Array.isArray(record.authorizedRecipients) && record.authorizedRecipients.length > 0) {
+    if (!currentUser || !currentUser.email) {
+      return {
+        allowed: false,
+        reason: 'Authentication required. Please log in to access this restricted file.',
+        status: 401,
+        authRequired: true
+      };
+    }
+
+    const normalizedUserEmail = normalizeEmail(currentUser.email);
+    const isAuthorized = record.authorizedRecipients.some(
+      (recipient) => normalizeEmail(recipient) === normalizedUserEmail
+    );
+
+    if (!isAuthorized) {
+      return {
+        allowed: false,
+        reason: 'Access denied: Your account is not authorized to access this file.',
+        status: 403,
+        accessDenied: true
+      };
+    }
+  }
+
+  // 5. Scan status check (Centralized hook for future ClamAV integration)
   // If infected or blocked by scanner in future phase, deny access immediately.
   if (record.scanStatus === SCAN_STATUS.INFECTED) {
     return {

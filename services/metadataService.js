@@ -94,7 +94,8 @@ export function normalizeRecord(record) {
     downloadLimit: record.downloadLimit !== undefined ? record.downloadLimit : null,
     downloadCount: typeof record.downloadCount === 'number' ? record.downloadCount : 0,
     status: record.status || 'active',
-    scanStatus: record.scanStatus || 'not_scanned'
+    scanStatus: record.scanStatus || 'not_scanned',
+    authorizedRecipients: Array.isArray(record.authorizedRecipients) ? record.authorizedRecipients : []
   };
 }
 

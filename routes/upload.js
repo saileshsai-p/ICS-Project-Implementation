@@ -9,6 +9,7 @@ import { FILE_STATUS } from '../services/accessService.js';
 import { SCAN_STATUS, scanFile } from '../services/malwareScanner.js';
 import { calculateFileSha256 } from '../services/fileIntegrityService.js';
 import { encryptFileToStorage } from '../services/encryptionService.js';
+import { normalizeEmail, isValidEmail } from '../services/userService.js';
 
 const router = express.Router();
 
@@ -101,9 +102,50 @@ function parseDownloadPolicy(policyInput, limitInput) {
 }
 
 /**
+ * Parses and validates optional authorized recipient email addresses.
+ * Supports comma, space, semicolon, or newline delimited strings or arrays.
+ * Deduplicates and normalizes to lowercase.
+ *
+ * @param {string|string[]|undefined} recipientsInput
+ * @returns {string[]} Array of unique normalized recipient emails
+ */
+export function parseRecipients(recipientsInput) {
+  if (!recipientsInput) return [];
+
+  let rawList = [];
+  if (Array.isArray(recipientsInput)) {
+    rawList = recipientsInput;
+  } else if (typeof recipientsInput === 'string') {
+    // Split by comma, semicolon, newline, or whitespace
+    rawList = recipientsInput.split(/[\s,;\n\r]+/);
+  } else {
+    return [];
+  }
+
+  const cleanSet = new Set();
+  for (const item of rawList) {
+    if (!item) continue;
+    const trimmed = item.trim();
+    if (!trimmed) continue;
+
+    const normalized = normalizeEmail(trimmed);
+    if (!isValidEmail(normalized)) {
+      throw {
+        status: 400,
+        message: `Invalid recipient email address: "${trimmed}". Please provide valid email addresses.`
+      };
+    }
+    cleanSet.add(normalized);
+  }
+
+  return Array.from(cleanSet);
+}
+
+/**
  * POST /api/files
  * Handles secure file uploads with AES-256-GCM encryption at rest,
- * SHA-256 integrity digest, download limits, optional password protection and link expiry.
+ * SHA-256 integrity digest, download limits, optional password protection, link expiry,
+ * and optional recipient email restrictions.
  */
 router.post('/', (req, res, next) => {
   uploadMiddleware(req, res, async (err) => {
@@ -122,10 +164,21 @@ router.post('/', (req, res, next) => {
     let storedName = null;
 
     try {
-      const { password, expiry, expiryValue, expiryUnit, downloadPolicy: rawPolicy, downloadLimit: rawLimit } = req.body;
+      const {
+        password,
+        expiry,
+        expiryValue,
+        expiryUnit,
+        downloadPolicy: rawPolicy,
+        downloadLimit: rawLimit,
+        recipients
+      } = req.body;
 
       // 2. Validate and parse download policy
       const { downloadPolicy, downloadLimit } = parseDownloadPolicy(rawPolicy, rawLimit);
+
+      // 3. Validate and parse optional authorized recipients
+      const authorizedRecipients = parseRecipients(recipients);
 
       // 3. Expiry calculation (flexible from 1 minute to any number of days)
       const expiresAt = calculateExpiry(expiry, expiryValue, expiryUnit);
@@ -181,6 +234,7 @@ router.post('/', (req, res, next) => {
         downloadPolicy,
         downloadLimit,
         downloadCount: 0,
+        authorizedRecipients,
         storageFormat: 'encrypted-v2',
         encryption: encryptionMeta,
         integrity: {
@@ -206,6 +260,7 @@ router.post('/', (req, res, next) => {
           downloadPolicy: fileRecord.downloadPolicy,
           downloadLimit: fileRecord.downloadLimit,
           downloadCount: fileRecord.downloadCount,
+          isRestricted: authorizedRecipients.length > 0,
           shareUrl: `/share/${shareToken}`
         }
       });

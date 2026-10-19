@@ -19,7 +19,10 @@
         </svg>
         <span>SecuShare</span>
       </a>
-      <span class="brand-badge">Version 2.0 (Encrypted at Rest)</span>
+      <div style="display: flex; align-items: center; gap: 1rem;">
+        <span class="brand-badge">Version 2.0 (Encrypted)</span>
+        <div class="nav-auth" id="nav-auth-container"></div>
+      </div>
     </div>
   </header>
 
@@ -88,6 +91,18 @@
                   <circle cx="12" cy="12" r="3"/>
                 </svg>
               </button>
+            </div>
+          </div>
+
+          <!-- Authorized Recipients (Feature E) -->
+          <div class="form-group">
+            <label class="form-label" for="recipients-input">
+              <span>Authorized Recipients</span>
+              <span class="optional-badge">Optional</span>
+            </label>
+            <textarea id="recipients-input" class="form-textarea" placeholder="alice@example.com, bob@example.com (comma, space, or newline separated)" rows="2"></textarea>
+            <div style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.35rem;">
+              Leave blank for a public link. If specified, only users who log in with these email addresses can access the file.
             </div>
           </div>
 
@@ -241,6 +256,10 @@
           <span class="meta-value" id="result-password-status">-</span>
         </div>
         <div class="meta-item">
+          <span class="meta-label">Access Authorization</span>
+          <span class="meta-value" id="result-access-status" style="color: var(--accent-cyan);">-</span>
+        </div>
+        <div class="meta-item">
           <span class="meta-label">Encryption at Rest</span>
           <span class="meta-value" style="color: var(--accent-emerald);">AES-256-GCM</span>
         </div>
@@ -270,6 +289,7 @@
     <p>&copy; 2026 SecuShare Version 2.0 &mdash; Local-Only Encrypted Storage.</p>
   </footer>
 
+  <script src="/js/auth.js"></script>
   <script src="/js/upload.js"></script>
 </body>
 </html>

@@ -16,6 +16,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   const downloadSubmitBtn = document.getElementById('download-submit-btn');
   const downloadBtnText = document.getElementById('download-btn-text');
   const downloadErrorAlert = document.getElementById('download-error-alert');
+  const errorActions = document.getElementById('error-actions');
+  const fileAccessBadge = document.getElementById('file-access-badge');
 
   // Extract share token from URL path: /share/:token
   const pathParts = window.location.pathname.split('/');
@@ -31,12 +33,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   }
 
-  function showErrorView(title, message) {
+  function showErrorView(title, message, actionsHtml = null) {
     loadingCard.style.display = 'none';
     downloadCard.style.display = 'none';
     errorCard.style.display = 'block';
     errorTitle.textContent = title;
     errorDescription.textContent = message;
+    if (errorActions) {
+      if (actionsHtml) {
+        errorActions.innerHTML = actionsHtml;
+      } else {
+        errorActions.innerHTML = '<a href="/" class="btn btn-secondary">Upload a New File</a>';
+      }
+    }
   }
 
   function showInlineError(message) {
@@ -96,6 +105,37 @@ document.addEventListener('DOMContentLoaded', async () => {
       return;
     }
 
+    if (res.status === 401 || data.authRequired) {
+      const redirectUrl = encodeURIComponent(window.location.pathname);
+      showErrorView(
+        'Authentication Required',
+        'This file is restricted to authorized recipients. Please log in or create an account to access this file.',
+        `<a href="/login?redirect=${redirectUrl}" class="btn btn-primary">Log In to Access</a>
+         <a href="/register?redirect=${redirectUrl}" class="btn btn-secondary">Register</a>`
+      );
+      return;
+    }
+
+    if (res.status === 403 && data.accessDenied) {
+      showErrorView(
+        'Access Denied',
+        'Your account is not authorized to access this file.',
+        `<button type="button" class="btn btn-primary" id="switch-account-btn">Log Out & Switch Account</button>
+         <a href="/" class="btn btn-secondary">Homepage</a>`
+      );
+      const switchBtn = document.getElementById('switch-account-btn');
+      if (switchBtn) {
+        switchBtn.addEventListener('click', () => {
+          if (window.SecuShareAuth) {
+            window.SecuShareAuth.logout();
+          } else {
+            window.location.href = '/';
+          }
+        });
+      }
+      return;
+    }
+
     if (res.status === 410 || data.expired || data.limitExhausted || data.unavailable) {
       if (data.limitExhausted) {
         showErrorView('Download Limit Reached', 'This link has reached its maximum authorized download limit and is no longer available.');
@@ -128,8 +168,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       passwordGroup.style.display = 'block';
       downloadPwdInput.focus();
     } else {
-      fileSecurityBadge.textContent = 'Direct Download (Public)';
+      fileSecurityBadge.textContent = 'Direct Download';
       passwordGroup.style.display = 'none';
+    }
+
+    if (fileAccessBadge) {
+      fileAccessBadge.textContent = data.isRestricted ? 'Restricted (Authorized Recipient)' : 'Public Link';
+      fileAccessBadge.style.color = data.isRestricted ? 'var(--accent-amber)' : 'var(--accent-cyan)';
     }
 
     // Initialize download policy badge
@@ -171,7 +216,23 @@ document.addEventListener('DOMContentLoaded', async () => {
         downloadSubmitBtn.disabled = false;
         downloadBtnText.textContent = 'Download File';
         if (res.status === 401) {
-          downloadPwdInput.select();
+          if (errorData.authRequired) {
+            const redirectUrl = encodeURIComponent(window.location.pathname);
+            showErrorView(
+              'Authentication Required',
+              'Please log in to access this restricted file.',
+              `<a href="/login?redirect=${redirectUrl}" class="btn btn-primary">Log In</a>`
+            );
+          } else {
+            downloadPwdInput.select();
+          }
+        } else if (res.status === 403 && errorData.accessDenied) {
+          showErrorView(
+            'Access Denied',
+            'Your account is not authorized to access this file.',
+            `<button type="button" class="btn btn-primary" id="switch-account-btn">Switch Account</button>`
+          );
+          document.getElementById('switch-account-btn')?.addEventListener('click', () => window.SecuShareAuth.logout());
         } else if (res.status === 410 && errorData.error?.includes('limit')) {
           showErrorView('Download Limit Reached', errorData.error);
         }

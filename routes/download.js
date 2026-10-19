@@ -5,13 +5,15 @@ import { passwordRateLimiter } from '../middleware/rateLimiter.js';
 import { decryptStorageToTemp, cleanupTempDecryptedFile } from '../services/encryptionService.js';
 import { calculateFileSha256, verifySha256Digest } from '../services/fileIntegrityService.js';
 import { acquireDownloadLease } from '../services/operationCoordinator.js';
+import { normalizeEmail } from '../services/userService.js';
 
 const router = express.Router();
 
 /**
  * GET /api/files/:token
  * Returns public metadata for a shared file (used by the download page).
- * Never exposes storage paths, internal IDs, encryption keys, or password hashes.
+ * Enforces recipient-based authorization if the file is restricted.
+ * Never exposes storage paths, internal IDs, encryption keys, password hashes, or authorized recipient lists.
  */
 router.get('/:token', async (req, res, next) => {
   try {
@@ -60,6 +62,32 @@ router.get('/:token', async (req, res, next) => {
       });
     }
 
+    // Check recipient restrictions (Feature G)
+    const isRestricted = Array.isArray(record.authorizedRecipients) && record.authorizedRecipients.length > 0;
+    if (isRestricted) {
+      if (!req.user) {
+        return res.status(401).json({
+          error: 'Authentication required. Please log in to access this restricted file.',
+          authRequired: true,
+          isRestricted: true,
+          redirectUrl: `/login?redirect=${encodeURIComponent(`/share/${record.shareToken}`)}`
+        });
+      }
+
+      const userEmail = normalizeEmail(req.user.email);
+      const isAuthorized = record.authorizedRecipients.some(
+        (recipient) => normalizeEmail(recipient) === userEmail
+      );
+
+      if (!isAuthorized) {
+        return res.status(403).json({
+          error: 'Access denied: Your account is not authorized to access this file.',
+          accessDenied: true,
+          isRestricted: true
+        });
+      }
+    }
+
     const remainingDownloads = record.downloadLimit !== null && record.downloadLimit !== undefined
       ? Math.max(0, record.downloadLimit - currentCount)
       : null;
@@ -74,7 +102,8 @@ router.get('/:token', async (req, res, next) => {
       downloadPolicy: record.downloadPolicy || 'unlimited',
       downloadLimit: record.downloadLimit,
       downloadCount: currentCount,
-      remainingDownloads
+      remainingDownloads,
+      isRestricted
     });
   } catch (err) {
     next(err);
@@ -83,7 +112,7 @@ router.get('/:token', async (req, res, next) => {
 
 /**
  * Common handler for authorized file delivery.
- * Enforces access control, GCM decryption, SHA-256 verification, and atomic allowance consumption.
+ * Enforces access control, recipient authorization, GCM decryption, SHA-256 verification, and atomic allowance consumption.
  */
 async function processDownload(req, res, password = null) {
   const { token } = req.params;
@@ -93,14 +122,18 @@ async function processDownload(req, res, password = null) {
     return res.status(404).json({ error: 'File not found or link is invalid.' });
   }
 
-  // 1. Centralized access authorization check
-  const access = await canDownload(record, password);
+  // 1. Centralized access authorization check (passes req.user for recipient validation)
+  const access = await canDownload(record, password, req.user);
 
   if (!access.allowed) {
-    if (access.status === 401 && req.recordPasswordFailure) {
+    if (access.status === 401 && !access.authRequired && req.recordPasswordFailure) {
       req.recordPasswordFailure();
     }
-    return res.status(access.status || 403).json({ error: access.reason });
+    return res.status(access.status || 403).json({
+      error: access.reason,
+      authRequired: !!access.authRequired,
+      accessDenied: !!access.accessDenied
+    });
   }
 
   // Clear any failed password attempts on successful access

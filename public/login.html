@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Log In — SecuShare</title>
+  <meta name="description" content="Log in to your SecuShare account to access restricted shared files.">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <!-- Header -->
+  <header>
+    <div class="nav-container">
+      <a href="/" class="brand" id="brand-link">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          <path d="M12 8v4"/>
+          <path d="M12 16h.01"/>
+        </svg>
+        <span>SecuShare</span>
+      </a>
+      <div class="nav-auth" id="nav-auth-container">
+        <!-- Injected dynamically by auth.js -->
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content -->
+  <main>
+    <div class="auth-container">
+      <div class="auth-header">
+        <h1>Welcome Back</h1>
+        <p>Log in to access your authorized files</p>
+      </div>
+
+      <div class="card">
+        <form id="login-form">
+          <!-- Email Input -->
+          <div class="form-group">
+            <label class="form-label" for="login-email">Email Address</label>
+            <input type="email" id="login-email" class="form-input" placeholder="you@example.com" required autocomplete="email" autofocus>
+          </div>
+
+          <!-- Password Input -->
+          <div class="form-group">
+            <label class="form-label" for="login-password">Password</label>
+            <div class="input-wrapper">
+              <input type="password" id="login-password" class="form-input" placeholder="Enter your password" required autocomplete="current-password">
+              <button type="button" class="toggle-pwd-btn" id="toggle-pwd-btn" title="Show or hide password">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                  <circle cx="12" cy="12" r="3"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <!-- Submit Button -->
+          <button type="submit" class="btn btn-primary btn-full" id="login-btn" style="margin-top: 1.5rem;">
+            <span id="login-btn-text">Log In</span>
+          </button>
+
+          <!-- Alert message -->
+          <div class="alert alert-error" id="login-error-alert" style="margin-top: 1rem;"></div>
+        </form>
+
+        <div class="auth-switch">
+          Don't have an account? <a href="/register" id="switch-register-link">Create Account</a>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Footer -->
+  <footer>
+    SecuShare &copy; 2026 &bull; Secure Local File Sharing Application
+  </footer>
+
+  <script src="/js/auth.js"></script>
+  <script src="/js/login.js"></script>
+</body>
+</html>

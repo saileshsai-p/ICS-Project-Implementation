@@ -11,12 +11,16 @@ try {
 
 import { initStorage } from './services/fileService.js';
 import { initMetadataStore } from './services/metadataService.js';
+import { initUserStore } from './services/userService.js';
+import { initSessionStore } from './services/sessionService.js';
 import { startCleanupWorker, stopCleanupWorker } from './services/cleanupService.js';
 import { securityHeaders } from './middleware/securityHeaders.js';
 import { errorHandler } from './middleware/errorHandler.js';
+import { authenticateSession } from './middleware/authMiddleware.js';
 
 import uploadRoutes from './routes/upload.js';
 import downloadRoutes from './routes/download.js';
+import authRoutes from './routes/auth.js';
 import pageRoutes from './routes/pages.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -33,13 +37,17 @@ app.use(securityHeaders);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Server-managed persistent session authentication middleware
+app.use(authenticateSession);
+
 // Serve static frontend assets exclusively from public/
 app.use(express.static(PUBLIC_DIR));
 
-// Page routes (Homepage and Download Page)
+// Page routes (Homepage, Download Page, Login, Register)
 app.use('/', pageRoutes);
 
 // API routes
+app.use('/api/auth', authRoutes);
 app.use('/api/files', uploadRoutes);
 app.use('/api/files', downloadRoutes);
 
@@ -55,12 +63,14 @@ app.use((req, res) => {
 app.use(errorHandler);
 
 /**
- * Initializes storage directories, metadata store, background cleanup worker,
- * and starts the HTTP server.
+ * Initializes storage directories, metadata store, user store, session store,
+ * background cleanup worker, and starts the HTTP server.
  */
 export async function startServer(port = PORT) {
   await initStorage();
   await initMetadataStore();
+  await initUserStore();
+  await initSessionStore();
   await startCleanupWorker();
 
   return new Promise((resolve) => {

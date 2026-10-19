@@ -25,6 +25,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const progressBar = document.getElementById('progress-bar');
   const progressText = document.getElementById('progress-text');
   const uploadErrorAlert = document.getElementById('upload-error-alert');
+  const recipientsInput = document.getElementById('recipients-input');
 
   // Result card elements
   const uploadCard = document.getElementById('upload-card');
@@ -226,6 +227,11 @@ document.addEventListener('DOMContentLoaded', () => {
       formData.append('password', pwd);
     }
 
+    // Optional authorized recipients
+    if (recipientsInput && recipientsInput.value.trim()) {
+      formData.append('recipients', recipientsInput.value.trim());
+    }
+
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/files', true);
 
@@ -281,6 +287,12 @@ document.addEventListener('DOMContentLoaded', () => {
     resultPasswordStatus.textContent = fileData.hasPassword ? 'Enabled (Password Required)' : 'None (Direct Access)';
     resultPasswordStatus.style.color = fileData.hasPassword ? 'var(--accent-cyan)' : 'var(--text-secondary)';
 
+    const resultAccessStatus = document.getElementById('result-access-status');
+    if (resultAccessStatus) {
+      resultAccessStatus.textContent = fileData.isRestricted ? 'Restricted (Authorized Recipients Only)' : 'Public (Anyone with link)';
+      resultAccessStatus.style.color = fileData.isRestricted ? 'var(--accent-amber)' : 'var(--accent-cyan)';
+    }
+
     // Policy display
     if (fileData.downloadPolicy === 'one_time') {
       resultPolicy.textContent = 'One-Time Download (1 Allowed)';
@@ -316,6 +328,7 @@ document.addEventListener('DOMContentLoaded', () => {
   uploadAnotherBtn.addEventListener('click', () => {
     clearSelectedFile();
     passwordInput.value = '';
+    if (recipientsInput) recipientsInput.value = '';
     resultCard.style.display = 'none';
     uploadCard.style.display = 'block';
   });

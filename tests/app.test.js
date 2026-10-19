@@ -10,6 +10,7 @@ import { getSafeFilePath, cleanupFile } from '../services/fileService.js';
 import { SCAN_STATUS } from '../services/malwareScanner.js';
 import crypto from 'node:crypto';
 import { registerV2Tests } from './v2.test.js';
+import { registerAuthTests } from './auth_authorization.test.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -351,3 +352,6 @@ test('Suite: Secure File Sharing Baseline Implementation', async (t) => {
 
 // Register Version 2 security enhancement tests
 registerV2Tests(() => baseUrl);
+
+// Register User Authentication and Recipient Authorization tests
+registerAuthTests(() => baseUrl);
