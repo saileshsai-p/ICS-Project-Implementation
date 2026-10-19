@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SecuShare — Secure Expiring File Sharing</title>
+  <meta name="description" content="Secure local file sharing web application with link expiration and password protection.">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <!-- Header -->
+  <header>
+    <div class="nav-container">
+      <a href="/" class="brand" id="brand-link">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          <path d="M12 8v4"/>
+          <path d="M12 16h.01"/>
+        </svg>
+        <span>SecuShare</span>
+      </a>
+      <span class="brand-badge">Baseline Research Prototype</span>
+    </div>
+  </header>
+
+  <!-- Main Content -->
+  <main>
+    <section class="hero">
+      <h1>Secure, Expiring File Sharing</h1>
+      <p>Upload a file, configure expiration, and generate a protected share link. No cloud tracking, local private storage.</p>
+    </section>
+
+    <!-- Upload View Card -->
+    <div class="card" id="upload-card">
+      <form id="upload-form">
+        <!-- Drag & Drop Zone -->
+        <div class="dropzone" id="dropzone">
+          <div class="dropzone-icon">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/>
+              <line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+          </div>
+          <div class="dropzone-title">Drag and drop your file here</div>
+          <div class="dropzone-subtitle">Supports any file type up to 50 MB</div>
+          <button type="button" class="btn btn-secondary" id="browse-btn">Browse Files</button>
+          <input type="file" id="file-input" class="file-input-hidden">
+        </div>
+
+        <!-- Selected File Preview -->
+        <div class="selected-file-box" id="selected-file-box">
+          <div class="selected-file-info">
+            <div class="file-icon">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                <polyline points="14 2 14 8 20 8"/>
+                <line x1="16" y1="13" x2="8" y2="13"/>
+                <line x1="16" y1="17" x2="8" y2="17"/>
+              </svg>
+            </div>
+            <div>
+              <div class="selected-file-name" id="file-name-display">filename.ext</div>
+              <div class="selected-file-size" id="file-size-display">0 KB</div>
+            </div>
+          </div>
+          <button type="button" class="btn-remove-file" id="remove-file-btn" title="Remove selected file">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+
+        <!-- Options Section -->
+        <div class="form-section">
+          <!-- Optional Password -->
+          <div class="form-group">
+            <label class="form-label" for="password-input">
+              <span>Password Protection</span>
+              <span class="optional-badge">Optional</span>
+            </label>
+            <div class="input-wrapper">
+              <input type="password" id="password-input" class="form-input" placeholder="Set a download password (optional)" autocomplete="new-password">
+              <button type="button" class="toggle-pwd-btn" id="toggle-upload-pwd" title="Show or hide password">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                  <circle cx="12" cy="12" r="3"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <!-- Expiration Duration -->
+          <div class="form-group">
+            <label class="form-label" for="expiry-select">
+              <span>Link Expiry Duration</span>
+              <span class="optional-badge" id="expiry-preview-badge">Calculated automatically</span>
+            </label>
+            <select id="expiry-select" class="form-select">
+              <option value="1m">1 Minute (Quick Test)</option>
+              <option value="5m">5 Minutes</option>
+              <option value="15m">15 Minutes</option>
+              <option value="1h">1 Hour</option>
+              <option value="6h">6 Hours</option>
+              <option value="24h" selected>24 Hours (1 Day)</option>
+              <option value="7d">7 Days</option>
+              <option value="30d">30 Days</option>
+              <option value="custom">Custom Duration (Choose 1 min to any number of days)...</option>
+            </select>
+
+            <!-- Custom Duration Container -->
+            <div id="custom-expiry-container" style="display: none; margin-top: 0.6rem; gap: 0.6rem; align-items: center;">
+              <input type="number" id="custom-expiry-value" class="form-input" min="1" max="365" value="3" placeholder="Amount" style="flex: 1;">
+              <select id="custom-expiry-unit" class="form-select" style="width: 140px;">
+                <option value="minutes">Minutes</option>
+                <option value="hours">Hours</option>
+                <option value="days" selected>Days</option>
+              </select>
+            </div>
+            <div id="expiry-live-hint" style="font-size: 0.8rem; color: var(--accent-cyan); margin-top: 0.25rem;"></div>
+          </div>
+
+          <!-- Submit Button -->
+          <button type="submit" class="btn btn-primary btn-full" id="upload-btn" disabled>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/>
+              <line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            <span id="upload-btn-text">Upload and Generate Link</span>
+          </button>
+        </div>
+
+        <!-- Progress Bar -->
+        <div class="progress-container" id="progress-container">
+          <div class="progress-header">
+            <span>Uploading...</span>
+            <span id="progress-text">0%</span>
+          </div>
+          <div class="progress-bar-bg">
+            <div class="progress-bar-fill" id="progress-bar"></div>
+          </div>
+        </div>
+
+        <!-- Alert messages -->
+        <div class="alert alert-error" id="upload-error-alert"></div>
+
+        <!-- Security Disclaimers -->
+        <div class="security-notes">
+          <div class="note-item">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/>
+              <polyline points="12 6 12 12 16 14"/>
+            </svg>
+            <span>Links expire automatically; backend rejects downloads after the expiration time.</span>
+          </div>
+          <div class="note-item">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+              <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+            </svg>
+            <span>Optional passwords are hashed using salted scrypt. Passwords are never stored in plaintext or exposed in URLs.</span>
+          </div>
+          <div class="note-item">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="12 2 2 7 12 12 22 7 12 2"/>
+              <polyline points="2 17 12 22 22 17"/>
+              <polyline points="2 12 12 17 22 12"/>
+            </svg>
+            <span>Baseline Notice: Malware scanning is disabled in this baseline. Files are stored unscanned.</span>
+          </div>
+        </div>
+      </form>
+    </div>
+
+    <!-- Upload Success / Share Result Card -->
+    <div class="card result-container" id="result-card">
+      <div class="result-header">
+        <div class="result-icon">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="20 6 9 17 4 12"/>
+          </svg>
+        </div>
+        <h2 class="result-title">File Ready to Share</h2>
+        <p class="dropzone-subtitle">Your file has been stored securely. Anyone with this link (and password if set) can access it.</p>
+      </div>
+
+      <!-- Share URL box -->
+      <div class="share-link-box">
+        <input type="text" class="share-url-text" id="share-url-input" readonly>
+        <button type="button" class="btn btn-secondary" id="copy-btn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+          </svg>
+          <span id="copy-btn-text">Copy Link</span>
+        </button>
+      </div>
+
+      <!-- File Details -->
+      <div class="meta-grid">
+        <div class="meta-item">
+          <span class="meta-label">Original Filename</span>
+          <span class="meta-value" id="result-filename">-</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">File Size</span>
+          <span class="meta-value" id="result-size">-</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Expiration</span>
+          <span class="meta-value" id="result-expiry">-</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Password Protection</span>
+          <span class="meta-value" id="result-password-status">-</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Scan Status</span>
+          <span class="meta-value" id="result-scan-status" style="color: var(--text-muted);">Unscanned (Baseline)</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Storage Integrity</span>
+          <span class="meta-value" style="color: var(--accent-emerald);">Private (Isolated)</span>
+        </div>
+      </div>
+
+      <!-- Action buttons -->
+      <div style="display: flex; gap: 1rem; margin-top: 1.5rem;">
+        <a href="#" class="btn btn-primary" id="open-download-btn" style="flex: 1;" target="_blank">
+          Open Download Page
+        </a>
+        <button type="button" class="btn btn-secondary" id="upload-another-btn" style="flex: 1;">
+          Upload Another File
+        </button>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    <p>&copy; 2026 SecuShare &mdash; Baseline Research Paper Implementation. Local-Only Storage.</p>
+  </footer>
+
+  <script src="/js/upload.js"></script>
+</body>
+</html>

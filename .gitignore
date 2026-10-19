@@ -1,0 +1,10 @@
+node_modules/
+storage/files/*
+!storage/files/.gitkeep
+storage/quarantine/*
+!storage/quarantine/.gitkeep
+storage/temp/*
+!storage/temp/.gitkeep
+data/*.tmp.json
+.DS_Store
+Thumbs.db
