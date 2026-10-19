@@ -8,3 +8,7 @@ storage/temp/*
 data/*.tmp.json
 .DS_Store
 Thumbs.db
+.env
+.env.*
+*.key
+*.pem

@@ -17,6 +17,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const customExpiryValue = document.getElementById('custom-expiry-value');
   const customExpiryUnit = document.getElementById('custom-expiry-unit');
   const expiryLiveHint = document.getElementById('expiry-live-hint');
+  const downloadPolicySelect = document.getElementById('download-policy-select');
+  const customLimitContainer = document.getElementById('custom-limit-container');
+  const downloadLimitValue = document.getElementById('download-limit-value');
+  const policyLiveHint = document.getElementById('policy-live-hint');
   const progressContainer = document.getElementById('progress-container');
   const progressBar = document.getElementById('progress-bar');
   const progressText = document.getElementById('progress-text');
@@ -32,6 +36,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const resultSize = document.getElementById('result-size');
   const resultExpiry = document.getElementById('result-expiry');
   const resultPasswordStatus = document.getElementById('result-password-status');
+  const resultPolicy = document.getElementById('result-policy');
   const openDownloadBtn = document.getElementById('open-download-btn');
   const uploadAnotherBtn = document.getElementById('upload-another-btn');
 
@@ -122,6 +127,26 @@ document.addEventListener('DOMContentLoaded', () => {
     passwordInput.setAttribute('type', isPassword ? 'text' : 'password');
   });
 
+  // Download policy change handlers
+  function updatePolicyLivePreview() {
+    const policy = downloadPolicySelect.value;
+    if (policy === 'one_time') {
+      customLimitContainer.style.display = 'none';
+      policyLiveHint.textContent = 'Single-use link: file access is revoked immediately after 1 download.';
+    } else if (policy === 'limited') {
+      customLimitContainer.style.display = 'flex';
+      const count = Math.max(1, parseInt(downloadLimitValue.value, 10) || 1);
+      policyLiveHint.textContent = `Link will permit up to ${count} authorized download${count > 1 ? 's' : ''}.`;
+    } else {
+      customLimitContainer.style.display = 'none';
+      policyLiveHint.textContent = 'Link allows unlimited authorized downloads until expiration.';
+    }
+  }
+
+  downloadPolicySelect.addEventListener('change', updatePolicyLivePreview);
+  downloadLimitValue.addEventListener('input', updatePolicyLivePreview);
+  updatePolicyLivePreview();
+
   // Calculate and display live expiry preview
   function updateExpiryLivePreview() {
     const now = Date.now();
@@ -146,7 +171,7 @@ document.addEventListener('DOMContentLoaded', () => {
       ms = presets[expirySelect.value] || ms;
     }
     const expiresAtDate = new Date(now + ms);
-    expiryLiveHint.textContent = `Will expire on: ${expiresAtDate.toLocaleString()}`;
+    expiryLiveHint.textContent = `Will expire and auto-clean on: ${expiresAtDate.toLocaleString()}`;
   }
 
   expirySelect.addEventListener('change', () => {
@@ -171,13 +196,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
     hideError();
     uploadBtn.disabled = true;
-    uploadBtnText.textContent = 'Uploading...';
+    uploadBtnText.textContent = 'Encrypting & Uploading...';
     progressContainer.style.display = 'block';
     progressBar.style.width = '0%';
     progressText.textContent = '0%';
 
     const formData = new FormData();
     formData.append('file', currentFile);
+
+    // Download policy
+    const policy = downloadPolicySelect.value;
+    formData.append('downloadPolicy', policy);
+    if (policy === 'limited') {
+      const limitVal = Math.max(1, parseInt(downloadLimitValue.value, 10) || 1);
+      formData.append('downloadLimit', limitVal);
+    }
     
     // Pass either custom amount + unit or the selected preset
     if (expirySelect.value === 'custom') {
@@ -248,6 +281,15 @@ document.addEventListener('DOMContentLoaded', () => {
     resultPasswordStatus.textContent = fileData.hasPassword ? 'Enabled (Password Required)' : 'None (Direct Access)';
     resultPasswordStatus.style.color = fileData.hasPassword ? 'var(--accent-cyan)' : 'var(--text-secondary)';
 
+    // Policy display
+    if (fileData.downloadPolicy === 'one_time') {
+      resultPolicy.textContent = 'One-Time Download (1 Allowed)';
+    } else if (fileData.downloadPolicy === 'limited') {
+      resultPolicy.textContent = `Limited (${fileData.downloadLimit} downloads max)`;
+    } else {
+      resultPolicy.textContent = 'Unlimited Downloads';
+    }
+
     openDownloadBtn.href = fileData.shareUrl;
   }
 
@@ -264,7 +306,6 @@ document.addEventListener('DOMContentLoaded', () => {
         copyBtn.classList.add('btn-secondary');
       }, 2500);
     }).catch(() => {
-      // Fallback
       document.execCommand('copy');
       copyBtnText.textContent = 'Copied!';
       setTimeout(() => { copyBtnText.textContent = 'Copy Link'; }, 2000);

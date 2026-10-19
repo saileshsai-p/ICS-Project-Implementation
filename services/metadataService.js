@@ -44,13 +44,31 @@ async function readRecords() {
 
 /**
  * Atomically writes records to disk via a temp file.
+ * Handles Windows transient EPERM/EBUSY file locking gracefully.
  * @param {Array} records 
  */
 async function writeRecords(records) {
   await initMetadataStore();
   const serialized = JSON.stringify(records, null, 2);
   await fs.writeFile(METADATA_TMP_FILE, serialized, 'utf-8');
-  await fs.rename(METADATA_TMP_FILE, METADATA_FILE);
+
+  let retries = 5;
+  while (retries > 0) {
+    try {
+      await fs.rename(METADATA_TMP_FILE, METADATA_FILE);
+      return;
+    } catch (err) {
+      if ((err.code === 'EPERM' || err.code === 'EBUSY') && retries > 1) {
+        retries--;
+        await new Promise((r) => setTimeout(r, 25));
+      } else {
+        // Fallback write if rename is locked by Windows indexing or external handle
+        await fs.writeFile(METADATA_FILE, serialized, 'utf-8');
+        await fs.unlink(METADATA_TMP_FILE).catch(() => {});
+        return;
+      }
+    }
+  }
 }
 
 /**
@@ -64,10 +82,30 @@ function queueTask(task) {
 }
 
 /**
+ * Ensures backward-compatible defaults for existing records that lack V2 fields.
+ * @param {Object|null} record
+ * @returns {Object|null}
+ */
+export function normalizeRecord(record) {
+  if (!record) return null;
+  return {
+    ...record,
+    downloadPolicy: record.downloadPolicy || 'unlimited',
+    downloadLimit: record.downloadLimit !== undefined ? record.downloadLimit : null,
+    downloadCount: typeof record.downloadCount === 'number' ? record.downloadCount : 0,
+    status: record.status || 'active',
+    scanStatus: record.scanStatus || 'not_scanned'
+  };
+}
+
+/**
  * Retrieves all stored metadata records.
  */
 export async function getAllFiles() {
-  return queueTask(() => readRecords());
+  return queueTask(async () => {
+    const records = await readRecords();
+    return records.map(normalizeRecord);
+  });
 }
 
 /**
@@ -77,7 +115,8 @@ export async function getAllFiles() {
 export async function getFileByToken(token) {
   return queueTask(async () => {
     const records = await readRecords();
-    return records.find((item) => item.shareToken === token) || null;
+    const found = records.find((item) => item.shareToken === token);
+    return found ? normalizeRecord(found) : null;
   });
 }
 
@@ -88,7 +127,8 @@ export async function getFileByToken(token) {
 export async function getFileById(id) {
   return queueTask(async () => {
     const records = await readRecords();
-    return records.find((item) => item.id === id) || null;
+    const found = records.find((item) => item.id === id);
+    return found ? normalizeRecord(found) : null;
   });
 }
 
@@ -133,5 +173,55 @@ export async function removeFileRecord(id) {
     const filtered = records.filter((item) => item.id !== id);
     await writeRecords(filtered);
     return true;
+  });
+}
+
+/**
+ * Atomically checks and consumes a single download allowance for a file.
+ * Guaranteed atomic within a single Node.js process via the serialized queue.
+ *
+ * @param {string} idOrToken - File ID or Share Token
+ * @returns {Promise<{ success: boolean, reason?: string, status?: number, record?: Object }>}
+ */
+export async function consumeDownloadAllowance(idOrToken) {
+  return queueTask(async () => {
+    const records = await readRecords();
+    const index = records.findIndex(
+      (item) => item.id === idOrToken || item.shareToken === idOrToken
+    );
+
+    if (index === -1) {
+      return {
+        success: false,
+        reason: 'File not found.',
+        status: 404
+      };
+    }
+
+    const record = records[index];
+    const currentCount = typeof record.downloadCount === 'number' ? record.downloadCount : 0;
+    const limit = record.downloadLimit;
+
+    // Check if limit is finite and already reached
+    if (limit !== null && limit !== undefined && currentCount >= limit) {
+      return {
+        success: false,
+        reason: 'This download link has reached its maximum download limit.',
+        status: 410,
+        downloadCount: currentCount,
+        downloadLimit: limit
+      };
+    }
+
+    // Atomically increment and persist
+    record.downloadCount = currentCount + 1;
+    await writeRecords(records);
+
+    return {
+      success: true,
+      downloadCount: record.downloadCount,
+      downloadLimit: limit,
+      record: normalizeRecord(record)
+    };
   });
 }

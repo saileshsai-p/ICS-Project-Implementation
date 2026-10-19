@@ -8,6 +8,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const fileSizeSubtitle = document.getElementById('file-size-subtitle');
   const fileExpiry = document.getElementById('file-expiry');
   const fileSecurityBadge = document.getElementById('file-security-badge');
+  const filePolicyBadge = document.getElementById('file-policy-badge');
   const passwordGroup = document.getElementById('password-group');
   const downloadPwdInput = document.getElementById('download-pwd-input');
   const toggleDownloadPwd = document.getElementById('toggle-download-pwd');
@@ -48,6 +49,30 @@ document.addEventListener('DOMContentLoaded', async () => {
     downloadErrorAlert.classList.remove('visible');
   }
 
+  function renderPolicyBadge(policy, remaining, limit) {
+    if (!filePolicyBadge) return;
+    if (policy === 'one_time') {
+      if (remaining !== null && remaining <= 0) {
+        filePolicyBadge.textContent = '0 remaining (Allowance Consumed)';
+        filePolicyBadge.style.color = 'var(--accent-rose)';
+      } else {
+        filePolicyBadge.textContent = 'One-Time Link (Single Use)';
+        filePolicyBadge.style.color = 'var(--accent-amber)';
+      }
+    } else if (policy === 'limited') {
+      if (remaining !== null && remaining <= 0) {
+        filePolicyBadge.textContent = `0 of ${limit} downloads remaining (Exhausted)`;
+        filePolicyBadge.style.color = 'var(--accent-rose)';
+      } else {
+        filePolicyBadge.textContent = `${remaining} of ${limit} downloads remaining`;
+        filePolicyBadge.style.color = 'var(--accent-cyan)';
+      }
+    } else {
+      filePolicyBadge.textContent = 'Unlimited Downloads';
+      filePolicyBadge.style.color = 'var(--text-secondary)';
+    }
+  }
+
   if (!token || token === 'share') {
     showErrorView('Invalid Link', 'No sharing token was detected in the URL.');
     return;
@@ -59,9 +84,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     downloadPwdInput.setAttribute('type', isPassword ? 'text' : 'password');
   });
 
-  // Step 1: Query backend for file metadata
+  // Step 1: Query backend for file metadata (prevent caching with cache: 'no-store')
   try {
-    const res = await fetch(`/api/files/${encodeURIComponent(token)}`);
+    const res = await fetch(`/api/files/${encodeURIComponent(token)}`, {
+      cache: 'no-store'
+    });
     const data = await res.json();
 
     if (res.status === 404) {
@@ -69,8 +96,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       return;
     }
 
-    if (res.status === 410 || data.expired) {
-      showErrorView('Link Expired', 'This sharing link has passed its expiration time and can no longer be downloaded.');
+    if (res.status === 410 || data.expired || data.limitExhausted || data.unavailable) {
+      if (data.limitExhausted) {
+        showErrorView('Download Limit Reached', 'This link has reached its maximum authorized download limit and is no longer available.');
+      } else if (data.expired) {
+        showErrorView('Link Expired', 'This sharing link has passed its expiration time and can no longer be downloaded.');
+      } else {
+        showErrorView('File Unavailable', data.error || 'This file has expired or is no longer available.');
+      }
       return;
     }
 
@@ -98,6 +131,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       fileSecurityBadge.textContent = 'Direct Download (Public)';
       passwordGroup.style.display = 'none';
     }
+
+    // Initialize download policy badge
+    renderPolicyBadge(data.downloadPolicy, data.remainingDownloads, data.downloadLimit);
   } catch (err) {
     showErrorView('Connection Error', 'Could not communicate with the local server. Ensure the server is running.');
     return;
@@ -117,7 +153,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     downloadSubmitBtn.disabled = true;
-    downloadBtnText.textContent = 'Authorizing & Downloading...';
+    downloadBtnText.textContent = 'Verifying & Decrypting...';
 
     try {
       // Passwords are sent exclusively in POST request body (NEVER in URL or query params)
@@ -136,11 +172,32 @@ document.addEventListener('DOMContentLoaded', async () => {
         downloadBtnText.textContent = 'Download File';
         if (res.status === 401) {
           downloadPwdInput.select();
+        } else if (res.status === 410 && errorData.error?.includes('limit')) {
+          showErrorView('Download Limit Reached', errorData.error);
         }
         return;
       }
 
-      // Successful authorization & download stream
+      // Check response headers for updated allowance values
+      const remainingHeader = res.headers.get('X-Download-Remaining');
+      if (remainingHeader !== null && remainingHeader !== undefined) {
+        fileMetadata.remainingDownloads = parseInt(remainingHeader, 10);
+      } else if (fileMetadata.remainingDownloads !== null && fileMetadata.remainingDownloads !== undefined) {
+        fileMetadata.remainingDownloads = Math.max(0, fileMetadata.remainingDownloads - 1);
+      }
+
+      if (typeof fileMetadata.downloadCount === 'number') {
+        fileMetadata.downloadCount += 1;
+      }
+
+      // Update badge live on the download page
+      renderPolicyBadge(
+        fileMetadata.downloadPolicy,
+        fileMetadata.remainingDownloads,
+        fileMetadata.downloadLimit
+      );
+
+      // Successful authorization, GCM decryption & SHA-256 integrity check passed!
       const blob = await res.blob();
       const downloadUrl = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -151,11 +208,38 @@ document.addEventListener('DOMContentLoaded', async () => {
       a.remove();
       window.URL.revokeObjectURL(downloadUrl);
 
-      downloadBtnText.textContent = 'Download Completed!';
-      setTimeout(() => {
-        downloadSubmitBtn.disabled = false;
-        downloadBtnText.textContent = 'Download Again';
-      }, 3000);
+      // Handle allowance exhaustion or re-enabling download
+      const isExhausted = fileMetadata.downloadPolicy === 'one_time' ||
+        (fileMetadata.remainingDownloads !== null && fileMetadata.remainingDownloads <= 0);
+
+      if (isExhausted) {
+        downloadSubmitBtn.disabled = true;
+        downloadBtnText.textContent = fileMetadata.downloadPolicy === 'one_time'
+          ? 'One-Time Allowance Consumed'
+          : 'Download Limit Exhausted';
+      } else {
+        downloadBtnText.textContent = 'Download Completed!';
+        setTimeout(() => {
+          downloadSubmitBtn.disabled = false;
+          downloadBtnText.textContent = 'Download Again';
+        }, 2000);
+      }
+
+      // Synchronize metadata from server in background
+      fetch(`/api/files/${encodeURIComponent(token)}`, { cache: 'no-store' })
+        .then((r) => r.json())
+        .then((fresh) => {
+          if (fresh && !fresh.error) {
+            fileMetadata = fresh;
+            renderPolicyBadge(fresh.downloadPolicy, fresh.remainingDownloads, fresh.downloadLimit);
+            if (fresh.limitExhausted || (fresh.remainingDownloads !== null && fresh.remainingDownloads <= 0)) {
+              downloadSubmitBtn.disabled = true;
+              downloadBtnText.textContent = 'Download Limit Exhausted';
+            }
+          }
+        })
+        .catch(() => {});
+
     } catch (err) {
       showInlineError('Network error during file download. Please try again.');
       downloadSubmitBtn.disabled = false;

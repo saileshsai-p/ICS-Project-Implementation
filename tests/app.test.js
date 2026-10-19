@@ -8,9 +8,15 @@ import { app, startServer } from '../server.js';
 import { getAllFiles, updateFileRecord } from '../services/metadataService.js';
 import { getSafeFilePath, cleanupFile } from '../services/fileService.js';
 import { SCAN_STATUS } from '../services/malwareScanner.js';
+import crypto from 'node:crypto';
+import { registerV2Tests } from './v2.test.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Configure test master encryption key (32 bytes)
+process.env.FILE_ENCRYPTION_MASTER_KEY =
+  process.env.FILE_ENCRYPTION_MASTER_KEY || crypto.randomBytes(32).toString('hex');
 
 let server;
 let baseUrl;
@@ -342,3 +348,6 @@ test('Suite: Secure File Sharing Baseline Implementation', async (t) => {
   });
 
 });
+
+// Register Version 2 security enhancement tests
+registerV2Tests(() => baseUrl);

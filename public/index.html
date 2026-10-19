@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>SecuShare — Secure Expiring File Sharing</title>
-  <meta name="description" content="Secure local file sharing web application with link expiration and password protection.">
+  <meta name="description" content="Secure local file sharing web application with AES-256-GCM encryption at rest, SHA-256 integrity, one-time download links, and automatic expiration cleanup.">
   <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
@@ -19,7 +19,7 @@
         </svg>
         <span>SecuShare</span>
       </a>
-      <span class="brand-badge">Baseline Research Prototype</span>
+      <span class="brand-badge">Version 2.0 (Encrypted at Rest)</span>
     </div>
   </header>
 
@@ -27,7 +27,7 @@
   <main>
     <section class="hero">
       <h1>Secure, Expiring File Sharing</h1>
-      <p>Upload a file, configure expiration, and generate a protected share link. No cloud tracking, local private storage.</p>
+      <p>AES-256-GCM encrypted local storage, SHA-256 integrity verification, one-time download limits, and automatic expiration cleanup.</p>
     </section>
 
     <!-- Upload View Card -->
@@ -91,11 +91,31 @@
             </div>
           </div>
 
+          <!-- Download Policy Selector (Feature A) -->
+          <div class="form-group">
+            <label class="form-label" for="download-policy-select">
+              <span>Download Policy</span>
+              <span class="optional-badge" id="policy-badge">Access Limit</span>
+            </label>
+            <select id="download-policy-select" class="form-select">
+              <option value="unlimited" selected>Unlimited Downloads (Default)</option>
+              <option value="one_time">One-Time Download (Single Use Link)</option>
+              <option value="limited">Limited Downloads (Custom Count)...</option>
+            </select>
+            <div id="custom-limit-container" style="display: none; margin-top: 0.6rem; gap: 0.6rem; align-items: center;">
+              <input type="number" id="download-limit-value" class="form-input" min="1" max="1000" value="3" placeholder="Max downloads" style="flex: 1;">
+              <span style="font-size: 0.85rem; color: var(--text-secondary); white-space: nowrap;">downloads permitted</span>
+            </div>
+            <div id="policy-live-hint" style="font-size: 0.8rem; color: var(--accent-cyan); margin-top: 0.25rem;">
+              Link allows unlimited authorized downloads until expiration.
+            </div>
+          </div>
+
           <!-- Expiration Duration -->
           <div class="form-group">
             <label class="form-label" for="expiry-select">
               <span>Link Expiry Duration</span>
-              <span class="optional-badge" id="expiry-preview-badge">Calculated automatically</span>
+              <span class="optional-badge" id="expiry-preview-badge">Auto Cleanup</span>
             </label>
             <select id="expiry-select" class="form-select">
               <option value="1m">1 Minute (Quick Test)</option>
@@ -135,7 +155,7 @@
         <!-- Progress Bar -->
         <div class="progress-container" id="progress-container">
           <div class="progress-header">
-            <span>Uploading...</span>
+            <span>Encrypting & Uploading...</span>
             <span id="progress-text">0%</span>
           </div>
           <div class="progress-bar-bg">
@@ -150,17 +170,17 @@
         <div class="security-notes">
           <div class="note-item">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="10"/>
-              <polyline points="12 6 12 12 16 14"/>
-            </svg>
-            <span>Links expire automatically; backend rejects downloads after the expiration time.</span>
-          </div>
-          <div class="note-item">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
               <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
             </svg>
-            <span>Optional passwords are hashed using salted scrypt. Passwords are never stored in plaintext or exposed in URLs.</span>
+            <span>AES-256-GCM encryption at rest with random per-file DEKs and master key envelope protection.</span>
+          </div>
+          <div class="note-item">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/>
+              <polyline points="12 6 12 12 16 14"/>
+            </svg>
+            <span>Expired links are rejected immediately; background worker automatically deletes expired files.</span>
           </div>
           <div class="note-item">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -168,7 +188,7 @@
               <polyline points="2 17 12 22 22 17"/>
               <polyline points="2 12 12 17 22 12"/>
             </svg>
-            <span>Baseline Notice: Malware scanning is disabled in this baseline. Files are stored unscanned.</span>
+            <span>SHA-256 digest calculated at upload and verified upon decryption before delivery.</span>
           </div>
         </div>
       </form>
@@ -183,7 +203,7 @@
           </svg>
         </div>
         <h2 class="result-title">File Ready to Share</h2>
-        <p class="dropzone-subtitle">Your file has been stored securely. Anyone with this link (and password if set) can access it.</p>
+        <p class="dropzone-subtitle">Your file has been encrypted with AES-256-GCM and stored securely.</p>
       </div>
 
       <!-- Share URL box -->
@@ -209,6 +229,10 @@
           <span class="meta-value" id="result-size">-</span>
         </div>
         <div class="meta-item">
+          <span class="meta-label">Download Policy</span>
+          <span class="meta-value" id="result-policy" style="color: var(--accent-cyan);">-</span>
+        </div>
+        <div class="meta-item">
           <span class="meta-label">Expiration</span>
           <span class="meta-value" id="result-expiry">-</span>
         </div>
@@ -217,12 +241,16 @@
           <span class="meta-value" id="result-password-status">-</span>
         </div>
         <div class="meta-item">
-          <span class="meta-label">Scan Status</span>
-          <span class="meta-value" id="result-scan-status" style="color: var(--text-muted);">Unscanned (Baseline)</span>
+          <span class="meta-label">Encryption at Rest</span>
+          <span class="meta-value" style="color: var(--accent-emerald);">AES-256-GCM</span>
         </div>
         <div class="meta-item">
-          <span class="meta-label">Storage Integrity</span>
-          <span class="meta-value" style="color: var(--accent-emerald);">Private (Isolated)</span>
+          <span class="meta-label">Integrity Verification</span>
+          <span class="meta-value" style="color: var(--accent-emerald);">SHA-256 Verified</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Scan Status</span>
+          <span class="meta-value" id="result-scan-status" style="color: var(--text-muted);">Unscanned (Baseline)</span>
         </div>
       </div>
 
@@ -239,7 +267,7 @@
   </main>
 
   <footer>
-    <p>&copy; 2026 SecuShare &mdash; Baseline Research Paper Implementation. Local-Only Storage.</p>
+    <p>&copy; 2026 SecuShare Version 2.0 &mdash; Local-Only Encrypted Storage.</p>
   </footer>
 
   <script src="/js/upload.js"></script>

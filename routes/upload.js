@@ -2,11 +2,13 @@ import express from 'express';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { uploadMiddleware } from '../middleware/uploadValidation.js';
-import { generateStoredName, moveToPermanentStorage, cleanupFile } from '../services/fileService.js';
+import { generateStoredName, cleanupFile } from '../services/fileService.js';
 import { hashPassword } from '../services/passwordService.js';
 import { addFileRecord } from '../services/metadataService.js';
 import { FILE_STATUS } from '../services/accessService.js';
 import { SCAN_STATUS, scanFile } from '../services/malwareScanner.js';
+import { calculateFileSha256 } from '../services/fileIntegrityService.js';
+import { encryptFileToStorage } from '../services/encryptionService.js';
 
 const router = express.Router();
 
@@ -74,8 +76,34 @@ function calculateExpiry(expiryInput, expiryValue, expiryUnit) {
 }
 
 /**
+ * Validates and parses user-supplied download policy.
+ * @param {string} policyInput - 'unlimited' | 'one_time' | 'limited'
+ * @param {string|number} limitInput - Numeric limit for 'limited' policy
+ * @returns {{ downloadPolicy: string, downloadLimit: number|null }}
+ */
+function parseDownloadPolicy(policyInput, limitInput) {
+  const policy = String(policyInput || 'unlimited').toLowerCase().trim();
+
+  if (policy === 'one_time') {
+    return { downloadPolicy: 'one_time', downloadLimit: 1 };
+  }
+
+  if (policy === 'limited') {
+    const parsed = parseInt(limitInput, 10);
+    if (isNaN(parsed) || parsed < 1) {
+      throw { status: 400, message: 'Configurable download limit must be a positive integer (at least 1).' };
+    }
+    return { downloadPolicy: 'limited', downloadLimit: parsed };
+  }
+
+  // Default: unlimited
+  return { downloadPolicy: 'unlimited', downloadLimit: null };
+}
+
+/**
  * POST /api/files
- * Handles secure file uploads with optional password protection and link expiry.
+ * Handles secure file uploads with AES-256-GCM encryption at rest,
+ * SHA-256 integrity digest, download limits, optional password protection and link expiry.
  */
 router.post('/', (req, res, next) => {
   uploadMiddleware(req, res, async (err) => {
@@ -94,12 +122,15 @@ router.post('/', (req, res, next) => {
     let storedName = null;
 
     try {
-      const { password, expiry, expiryValue, expiryUnit } = req.body;
+      const { password, expiry, expiryValue, expiryUnit, downloadPolicy: rawPolicy, downloadLimit: rawLimit } = req.body;
 
-      // 2. Expiry calculation (flexible from 1 minute to any number of days)
+      // 2. Validate and parse download policy
+      const { downloadPolicy, downloadLimit } = parseDownloadPolicy(rawPolicy, rawLimit);
+
+      // 3. Expiry calculation (flexible from 1 minute to any number of days)
       const expiresAt = calculateExpiry(expiry, expiryValue, expiryUnit);
 
-      // 3. Optional password hashing using scrypt with unique salt
+      // 4. Optional password hashing using scrypt with unique salt
       let passwordData = null;
       if (password && typeof password === 'string' && password.trim().length > 0) {
         if (password.length > 128) {
@@ -108,7 +139,7 @@ router.post('/', (req, res, next) => {
         passwordData = await hashPassword(password);
       }
 
-      // 4. Generate internal file ID, safe storage name, and share token
+      // 5. Generate internal file ID, safe storage name, and share token
       const fileId = crypto.randomUUID();
       storedName = generateStoredName(req.file.originalname);
       // Generate unguessable 256-bit URL-safe share token
@@ -116,19 +147,24 @@ router.post('/', (req, res, next) => {
 
       /* =========================================================================
        * [FUTURE CLAMAV INTEGRATION HOOK]
-       * Step 1: Scan the temporary file before moving it to permanent storage:
+       * Step 1: Scan the original temporary file BEFORE encryption and permanent storage:
        * const scanResult = await scanFile(tempFilePath);
        * if (scanResult.status === SCAN_STATUS.INFECTED) {
-       *   // Move to storage/quarantine or delete, and reject upload:
        *   await cleanupFile(tempFilePath);
        *   return res.status(400).json({ error: 'File rejected: Potential malware detected.' });
        * }
        * ========================================================================= */
 
-      // 5. Move file to private permanent storage
-      await moveToPermanentStorage(tempFilePath, storedName);
+      // 6. Calculate SHA-256 integrity digest of original uploaded plaintext
+      const originalPlaintextSha256 = await calculateFileSha256(tempFilePath);
 
-      // 6. Record metadata
+      // 7. Encrypt file using AES-256-GCM into permanent private storage
+      const { encryptionMeta } = await encryptFileToStorage(tempFilePath, storedName);
+
+      // 8. Immediately remove plaintext temporary upload
+      await cleanupFile(tempFilePath);
+
+      // 9. Record metadata with versioned encryption and integrity structures
       const fileRecord = {
         id: fileId,
         shareToken,
@@ -141,12 +177,22 @@ router.post('/', (req, res, next) => {
         expiresAt,
         createdAt: new Date().toISOString(),
         status: FILE_STATUS.ACTIVE,
-        scanStatus: SCAN_STATUS.NOT_SCANNED
+        scanStatus: SCAN_STATUS.NOT_SCANNED,
+        downloadPolicy,
+        downloadLimit,
+        downloadCount: 0,
+        storageFormat: 'encrypted-v2',
+        encryption: encryptionMeta,
+        integrity: {
+          algorithm: 'sha256',
+          expectedDigest: originalPlaintextSha256,
+          version: 1
+        }
       };
 
       await addFileRecord(fileRecord);
 
-      // 7. Return share URL and public metadata (NEVER expose hashes, salts, or paths)
+      // 10. Return share URL and public metadata (NEVER expose master key, wrapped keys, hashes, salts, or paths)
       return res.status(201).json({
         success: true,
         file: {
@@ -157,6 +203,9 @@ router.post('/', (req, res, next) => {
           hasPassword: !!passwordData,
           expiresAt: fileRecord.expiresAt,
           scanStatus: fileRecord.scanStatus,
+          downloadPolicy: fileRecord.downloadPolicy,
+          downloadLimit: fileRecord.downloadLimit,
+          downloadCount: fileRecord.downloadCount,
           shareUrl: `/share/${shareToken}`
         }
       });

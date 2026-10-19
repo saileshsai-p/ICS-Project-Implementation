@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Download Shared File — SecuShare</title>
-  <meta name="description" content="Securely download shared files with expiration and password verification.">
+  <meta name="description" content="Securely download shared files with AES-256-GCM decryption, SHA-256 integrity verification, and password protection.">
   <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
@@ -19,7 +19,7 @@
         </svg>
         <span>SecuShare</span>
       </a>
-      <span class="brand-badge">Baseline Research Prototype</span>
+      <span class="brand-badge">Version 2.0 (Encrypted at Rest)</span>
     </div>
   </header>
 
@@ -27,7 +27,7 @@
   <main>
     <section class="hero">
       <h1>Secure File Download</h1>
-      <p>Verify link authenticity and download your shared file.</p>
+      <p>Verify link authenticity, decrypt on authorization, and verify SHA-256 integrity before downloading.</p>
     </section>
 
     <!-- State 1: Loading State -->
@@ -39,7 +39,7 @@
       <div style="font-weight: 600; color: var(--text-secondary);">Verifying sharing link...</div>
     </div>
 
-    <!-- State 2: Error Card (Not Found, Expired, Blocked) -->
+    <!-- State 2: Error Card (Not Found, Expired, Blocked, Limit Reached) -->
     <div class="card" id="error-card" style="display: none; text-align: center; padding: 2.5rem 1.5rem;">
       <div style="display: inline-flex; width: 56px; height: 56px; border-radius: 50%; background: rgba(244, 63, 94, 0.15); color: var(--accent-rose); align-items: center; justify-content: center; margin-bottom: 1rem;">
         <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -83,12 +83,20 @@
           <span class="meta-value" id="file-security-badge" style="color: var(--accent-cyan);">-</span>
         </div>
         <div class="meta-item">
-          <span class="meta-label">Malware Scan</span>
-          <span class="meta-value" style="color: var(--text-muted);">Unscanned (Baseline)</span>
+          <span class="meta-label">Download Allowance</span>
+          <span class="meta-value" id="file-policy-badge" style="color: var(--accent-cyan);">-</span>
         </div>
         <div class="meta-item">
-          <span class="meta-label">Origin Storage</span>
-          <span class="meta-value" style="color: var(--accent-emerald);">Secure Private Disk</span>
+          <span class="meta-label">Storage Protection</span>
+          <span class="meta-value" style="color: var(--accent-emerald);">AES-256-GCM Encrypted</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Integrity Verification</span>
+          <span class="meta-value" style="color: var(--accent-emerald);">SHA-256 Authenticated</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Malware Scan</span>
+          <span class="meta-value" style="color: var(--text-muted);">Unscanned (Baseline)</span>
         </div>
       </div>
 
@@ -133,12 +141,20 @@
           </svg>
           <span>Passwords are never sent in URLs. Verification is performed on the server via timing-safe scrypt checks.</span>
         </div>
+        <div class="note-item">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="12 2 2 7 12 12 22 7 12 2"/>
+            <polyline points="2 17 12 22 22 17"/>
+            <polyline points="2 12 12 17 22 12"/>
+          </svg>
+          <span>Server decrypts via AES-256-GCM and verifies SHA-256 digest before streaming to your browser.</span>
+        </div>
       </div>
     </div>
   </main>
 
   <footer>
-    <p>&copy; 2026 SecuShare &mdash; Baseline Research Paper Implementation. Local-Only Storage.</p>
+    <p>&copy; 2026 SecuShare Version 2.0 &mdash; Local-Only Encrypted Storage.</p>
   </footer>
 
   <style>

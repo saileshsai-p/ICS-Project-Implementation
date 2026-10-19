@@ -2,8 +2,16 @@ import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// Load .env automatically if present
+try {
+  if (typeof process.loadEnvFile === 'function') {
+    process.loadEnvFile();
+  }
+} catch {}
+
 import { initStorage } from './services/fileService.js';
 import { initMetadataStore } from './services/metadataService.js';
+import { startCleanupWorker, stopCleanupWorker } from './services/cleanupService.js';
 import { securityHeaders } from './middleware/securityHeaders.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
@@ -47,11 +55,13 @@ app.use((req, res) => {
 app.use(errorHandler);
 
 /**
- * Initializes storage directories and starts the HTTP server.
+ * Initializes storage directories, metadata store, background cleanup worker,
+ * and starts the HTTP server.
  */
 export async function startServer(port = PORT) {
   await initStorage();
   await initMetadataStore();
+  await startCleanupWorker();
 
   return new Promise((resolve) => {
     const server = app.listen(port, () => {
@@ -59,6 +69,16 @@ export async function startServer(port = PORT) {
       resolve(server);
     });
   });
+}
+
+/**
+ * Gracefully stops the server and terminates background worker timers.
+ */
+export async function stopServer(server) {
+  stopCleanupWorker();
+  if (server) {
+    return new Promise((resolve) => server.close(resolve));
+  }
 }
 
 // Start immediately if executed directly via Node

@@ -4,6 +4,8 @@ import { SCAN_STATUS } from './malwareScanner.js';
 
 export const FILE_STATUS = {
   ACTIVE: 'active',
+  DELETING: 'deleting',
+  DELETED: 'deleted',
   PENDING_SCAN: 'pending_scan',
   BLOCKED: 'blocked',
   UNAVAILABLE: 'unavailable'
@@ -27,10 +29,11 @@ export async function canDownload(record, providedPassword = null) {
 
   // 1. File lifecycle status check
   if (record.status !== FILE_STATUS.ACTIVE) {
+    const isDeleting = record.status === FILE_STATUS.DELETING || record.status === FILE_STATUS.DELETED;
     return {
       allowed: false,
-      reason: 'This file is currently unavailable.',
-      status: 403
+      reason: isDeleting ? 'This file is no longer available.' : 'This file is currently unavailable.',
+      status: isDeleting ? 410 : 403
     };
   }
 
@@ -43,6 +46,18 @@ export async function canDownload(record, providedPassword = null) {
       reason: 'This sharing link has expired.',
       status: 410 // 410 Gone indicates expired resource
     };
+  }
+
+  // 3. Download allowance check (Feature A: Download limits & one-time links)
+  if (record.downloadLimit !== null && record.downloadLimit !== undefined) {
+    const currentCount = typeof record.downloadCount === 'number' ? record.downloadCount : 0;
+    if (currentCount >= record.downloadLimit) {
+      return {
+        allowed: false,
+        reason: 'This download link has reached its maximum download limit.',
+        status: 410
+      };
+    }
   }
 
   // 3. Scan status check (Centralized hook for future ClamAV integration)
