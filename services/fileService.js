@@ -1,12 +1,9 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { fileURLToPath } from 'node:url';
+import { STORAGE_ROOT as CONFIGURED_STORAGE_ROOT } from './config.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-export const STORAGE_ROOT = path.resolve(__dirname, '../storage');
+export const STORAGE_ROOT = CONFIGURED_STORAGE_ROOT;
 export const FILES_DIR = path.join(STORAGE_ROOT, 'files');
 export const QUARANTINE_DIR = path.join(STORAGE_ROOT, 'quarantine');
 export const TEMP_DIR = path.join(STORAGE_ROOT, 'temp');
@@ -77,17 +74,51 @@ export async function moveToPermanentStorage(sourceTempPath, targetStoredName) {
 }
 
 /**
- * Cleans up / deletes a file if it exists. Used for error recovery.
- * @param {string} filePathOrStoredName 
+ * Best-effort deletion used for error recovery paths where a failure to remove
+ * a file must not mask the original error (for example discarding a temporary
+ * upload after a rejected request).
+ *
+ * Prefer {@link deleteFileWithResult} whenever the caller needs to know whether
+ * the deletion actually succeeded.
+ *
+ * @param {string} filePathOrStoredName
  */
 export async function cleanupFile(filePathOrStoredName) {
+  await deleteFileWithResult(filePathOrStoredName);
+}
+
+/**
+ * Deletes a file and reports the precise outcome.
+ *
+ * Distinguishing a genuinely absent file from a failed deletion matters for the
+ * cleanup worker: a record may only be marked 'deleted' when the ciphertext is
+ * actually gone. A locked or permission-denied file (EBUSY / EPERM / EACCES,
+ * common on Windows while a virus scanner or editor holds a handle) must keep
+ * the record in a retryable state instead.
+ *
+ * @param {string} filePathOrStoredName - Absolute path, or a stored name inside FILES_DIR
+ * @returns {Promise<{ outcome: 'deleted'|'missing'|'failed', code?: string, message?: string }>}
+ */
+export async function deleteFileWithResult(filePathOrStoredName) {
+  let target = filePathOrStoredName;
+
   try {
-    let target = filePathOrStoredName;
     if (!path.isAbsolute(target)) {
       target = getSafeFilePath(target);
     }
+  } catch (err) {
+    // Path traversal attempt or unusable name: never treat this as a success.
+    return { outcome: 'failed', code: 'EINVALIDPATH', message: err.message };
+  }
+
+  try {
     await fs.unlink(target);
-  } catch {
-    // Ignore ENOENT errors during cleanup
+    return { outcome: 'deleted' };
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      // Already absent: the desired end state is satisfied.
+      return { outcome: 'missing', code: err.code };
+    }
+    return { outcome: 'failed', code: err.code, message: err.message };
   }
 }

@@ -14,6 +14,7 @@ import { initMetadataStore } from './services/metadataService.js';
 import { initUserStore } from './services/userService.js';
 import { initSessionStore } from './services/sessionService.js';
 import { startCleanupWorker, stopCleanupWorker } from './services/cleanupService.js';
+import { getMasterKey } from './services/encryptionService.js';
 import { securityHeaders } from './middleware/securityHeaders.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { authenticateSession } from './middleware/authMiddleware.js';
@@ -71,6 +72,14 @@ export async function startServer(port = PORT) {
   await initMetadataStore();
   await initUserStore();
   await initSessionStore();
+
+  // Resolve the encryption master key during startup so that a missing or
+  // malformed key fails immediately with a clear message, instead of surfacing
+  // as a 500 on the first upload. For a fresh installation this initializes and
+  // persists a new key; for an existing installation with encrypted data and no
+  // key it deliberately refuses to start.
+  getMasterKey();
+
   await startCleanupWorker();
 
   return new Promise((resolve) => {

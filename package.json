@@ -1,13 +1,14 @@
 {
   "name": "secure-file-sharing",
   "version": "1.0.0",
-  "description": "Baseline Secure File Sharing Web Application with Expiry and ClamAV-ready architecture",
+  "description": "Local secure file sharing web application with AES-256-GCM encryption at rest, SHA-256 integrity verification, expiry and download restrictions. Active malware scanning is out of scope.",
   "type": "module",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node --test tests/app.test.js",
+    "test": "node --test --import ./tests/setup.mjs tests/app.test.js",
+    "benchmark": "node scripts/benchmark.js",
     "migrate": "node scripts/migrate.js"
   },
   "dependencies": {

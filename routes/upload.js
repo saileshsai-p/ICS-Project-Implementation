@@ -10,6 +10,7 @@ import { SCAN_STATUS, scanFile } from '../services/malwareScanner.js';
 import { calculateFileSha256 } from '../services/fileIntegrityService.js';
 import { encryptFileToStorage } from '../services/encryptionService.js';
 import { normalizeEmail, isValidEmail } from '../services/userService.js';
+import { registerActiveTempFile, releaseActiveTempFile } from '../services/operationCoordinator.js';
 
 const router = express.Router();
 
@@ -163,6 +164,10 @@ router.post('/', (req, res, next) => {
     const tempFilePath = req.file.path;
     let storedName = null;
 
+    // Protect the plaintext staging file from the background temp sweeper for
+    // as long as this request is still working with it.
+    registerActiveTempFile(tempFilePath);
+
     try {
       const {
         password,
@@ -180,10 +185,10 @@ router.post('/', (req, res, next) => {
       // 3. Validate and parse optional authorized recipients
       const authorizedRecipients = parseRecipients(recipients);
 
-      // 3. Expiry calculation (flexible from 1 minute to any number of days)
+      // 4. Expiry calculation (flexible from 1 minute to any number of days)
       const expiresAt = calculateExpiry(expiry, expiryValue, expiryUnit);
 
-      // 4. Optional password hashing using scrypt with unique salt
+      // 5. Optional password hashing using scrypt with unique salt
       let passwordData = null;
       if (password && typeof password === 'string' && password.trim().length > 0) {
         if (password.length > 128) {
@@ -192,7 +197,7 @@ router.post('/', (req, res, next) => {
         passwordData = await hashPassword(password);
       }
 
-      // 5. Generate internal file ID, safe storage name, and share token
+      // 6. Generate internal file ID, safe storage name, and share token
       const fileId = crypto.randomUUID();
       storedName = generateStoredName(req.file.originalname);
       // Generate unguessable 256-bit URL-safe share token
@@ -208,16 +213,16 @@ router.post('/', (req, res, next) => {
        * }
        * ========================================================================= */
 
-      // 6. Calculate SHA-256 integrity digest of original uploaded plaintext
+      // 7. Calculate SHA-256 integrity digest of original uploaded plaintext
       const originalPlaintextSha256 = await calculateFileSha256(tempFilePath);
 
-      // 7. Encrypt file using AES-256-GCM into permanent private storage
+      // 8. Encrypt file using AES-256-GCM into permanent private storage
       const { encryptionMeta } = await encryptFileToStorage(tempFilePath, storedName);
 
-      // 8. Immediately remove plaintext temporary upload
+      // 9. Immediately remove plaintext temporary upload
       await cleanupFile(tempFilePath);
 
-      // 9. Record metadata with versioned encryption and integrity structures
+      // 10. Record metadata with versioned encryption and integrity structures
       const fileRecord = {
         id: fileId,
         shareToken,
@@ -246,7 +251,7 @@ router.post('/', (req, res, next) => {
 
       await addFileRecord(fileRecord);
 
-      // 10. Return share URL and public metadata (NEVER expose master key, wrapped keys, hashes, salts, or paths)
+      // 11. Return share URL and public metadata (NEVER expose master key, wrapped keys, hashes, salts, or paths)
       return res.status(201).json({
         success: true,
         file: {
@@ -269,6 +274,8 @@ router.post('/', (req, res, next) => {
       if (tempFilePath) await cleanupFile(tempFilePath);
       if (storedName) await cleanupFile(storedName);
       next(uploadErr);
+    } finally {
+      releaseActiveTempFile(tempFilePath);
     }
   });
 });

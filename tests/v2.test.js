@@ -1,36 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import path from 'node:path';
 import crypto from 'node:crypto';
-import { fileURLToPath } from 'node:url';
 
-import { getAllFiles, updateFileRecord, getFileByToken, addFileRecord } from '../services/metadataService.js';
-import { getSafeFilePath, cleanupFile, fileExists, FILES_DIR, TEMP_DIR } from '../services/fileService.js';
-import { calculateFileSha256, verifySha256Digest } from '../services/fileIntegrityService.js';
-import {
-  getMasterKey,
-  encryptFileToStorage,
-  decryptStorageToTemp,
-  cleanupTempDecryptedFile,
-  wrapDek,
-  unwrapDek
-} from '../services/encryptionService.js';
+import { updateFileRecord, getFileByToken, addFileRecord } from '../services/metadataService.js';
+import { getSafeFilePath, fileExists, TEMP_DIR } from '../services/fileService.js';
+import { verifySha256Digest } from '../services/fileIntegrityService.js';
+import { wrapDek, unwrapDek } from '../services/encryptionService.js';
 import { runCleanupCycle } from '../services/cleanupService.js';
 import { acquireDownloadLease, hasActiveDownloads } from '../services/operationCoordinator.js';
-import { migrateLegacyRecord, migrateAllLegacyRecords } from '../services/migrationService.js';
+import { migrateLegacyRecord } from '../services/migrationService.js';
 import { FILE_STATUS } from '../services/accessService.js';
 
 export function registerV2Tests(urlOrGetter) {
   test('Suite: SecuShare Version 2 Security Enhancements', async (suite) => {
     const baseUrl = typeof urlOrGetter === 'function' ? urlOrGetter() : urlOrGetter;
 
-    /* =========================================================================
-     * FEATURE A: Download Limits and One-Time Links
-     * ========================================================================= */
     await suite.test('Feature A: Download limits and atomic consumption', async (t) => {
 
-      // Test A1: One-time download allows first attempt and rejects second attempt
       await t.test('A1. One-time download allows 1st attempt and rejects 2nd attempt', async () => {
         const formData = new FormData();
         const content = 'One-time link secret payload ' + crypto.randomUUID();
@@ -63,7 +50,6 @@ export function registerV2Tests(urlOrGetter) {
         assert.equal(metaData.limitExhausted, true);
       });
 
-      // Test A2: Configurable finite download limit
       await t.test('A2. Configurable download limit allows exact number of downloads', async () => {
         const formData = new FormData();
         const content = 'Three downloads allowance ' + crypto.randomUUID();
@@ -94,7 +80,6 @@ export function registerV2Tests(urlOrGetter) {
         assert.equal(dl4.status, 410);
       });
 
-      // Test A3: Incorrect password does not consume an allowance
       await t.test('A3. Incorrect password does not consume download allowance', async () => {
         const formData = new FormData();
         const content = 'Protected one-time file';
@@ -137,7 +122,6 @@ export function registerV2Tests(urlOrGetter) {
         assert.equal(followUpRes.status, 410);
       });
 
-      // Test A4: Concurrent one-time requests permit at most one authorized download
       await t.test('A4. Concurrent requests on a one-time link allow strictly 1 download', async () => {
         const formData = new FormData();
         const content = 'Concurrent race condition test ' + crypto.randomUUID();
@@ -166,7 +150,6 @@ export function registerV2Tests(urlOrGetter) {
         assert.equal(record.downloadCount, 1);
       });
 
-      // Test A5: Download limit metadata persistence across restart
       await t.test('A5. Download limit and count persist in metadata storage', async () => {
         const formData = new FormData();
         formData.append('file', new Blob(['Persistence test'], { type: 'text/plain' }), 'persist.txt');
@@ -189,12 +172,8 @@ export function registerV2Tests(urlOrGetter) {
       });
     });
 
-    /* =========================================================================
-     * FEATURE B: AES-256-GCM Encryption at Rest
-     * ========================================================================= */
     await suite.test('Feature B: AES-256-GCM encryption at rest', async (t) => {
 
-      // Test B1: Stored permanent file differs from plaintext (stored as ciphertext)
       await t.test('B1. Permanent stored file is encrypted ciphertext (differs from plaintext)', async () => {
         const plaintextContent = 'Sensitive confidential plaintext that must NEVER appear unencrypted on disk';
         const formData = new FormData();
@@ -228,7 +207,6 @@ export function registerV2Tests(urlOrGetter) {
         assert.equal(recoveredText, plaintextContent);
       });
 
-      // Test B2: Binary data preservation
       await t.test('B2. Binary files (random bytes) are preserved with byte-for-byte fidelity', async () => {
         const randomBytes = crypto.randomBytes(32 * 1024); // 32 KB random binary
         const formData = new FormData();
@@ -247,7 +225,6 @@ export function registerV2Tests(urlOrGetter) {
         assert.equal(Buffer.compare(downloadedBytes, randomBytes), 0, 'Binary content must match byte-for-byte');
       });
 
-      // Test B3: Tampered ciphertext causes GCM authentication failure and rejects download
       await t.test('B3. Tampered ciphertext causes GCM authentication failure', async () => {
         const formData = new FormData();
         formData.append('file', new Blob(['Content to tamper with'], { type: 'text/plain' }), 'tamper_cipher.txt');
@@ -273,7 +250,6 @@ export function registerV2Tests(urlOrGetter) {
         assert.ok(!JSON.stringify(dlData).includes('Content to tamper'));
       });
 
-      // Test B4: Tampered wrapped DEK causes unwrap failure
       await t.test('B4. Tampered wrapped DEK metadata is rejected', async () => {
         const formData = new FormData();
         formData.append('file', new Blob(['DEK tamper test'], { type: 'text/plain' }), 'tamper_dek.txt');
@@ -299,7 +275,6 @@ export function registerV2Tests(urlOrGetter) {
         assert.equal(dlRes.status, 500);
       });
 
-      // Test B5: Missing or invalid master key fails safely
       await t.test('B5. Wrong master key fails safely without exposing data', () => {
         const dek = crypto.randomBytes(32);
         const masterKey1 = crypto.randomBytes(32);
@@ -313,7 +288,6 @@ export function registerV2Tests(urlOrGetter) {
         }, /Master key verification failed|Unsupported state/i);
       });
 
-      // Test B6: Temporary plaintext is cleaned up after successful download
       await t.test('B6. Temporary plaintext file in temp/ is removed after download', async () => {
         const formData = new FormData();
         formData.append('file', new Blob(['Temp cleanup check'], { type: 'text/plain' }), 'temp_clean.txt');
@@ -333,7 +307,6 @@ export function registerV2Tests(urlOrGetter) {
         assert.equal(decFiles.length, 0, 'All temporary decrypted files must be cleaned up');
       });
 
-      // Test B7: Legacy record migration
       await t.test('B7. Legacy plaintext records can be migrated to encrypted-v2 safely', async () => {
         // Create an unencrypted legacy record directly
         const legacyId = crypto.randomUUID();
@@ -379,12 +352,8 @@ export function registerV2Tests(urlOrGetter) {
       });
     });
 
-    /* =========================================================================
-     * FEATURE C: Automatic Deletion After Expiry
-     * ========================================================================= */
     await suite.test('Feature C: Automatic deletion after expiry and restart recovery', async (t) => {
 
-      // Test C1: Expired file is rejected immediately by authorization logic
       await t.test('C1. Expired file is rejected immediately prior to cleanup', async () => {
         const formData = new FormData();
         formData.append('file', new Blob(['Immediate expiry test'], { type: 'text/plain' }), 'imm_exp.txt');
@@ -405,7 +374,6 @@ export function registerV2Tests(urlOrGetter) {
         assert.equal(dlRes.status, 410);
       });
 
-      // Test C2: Expired file is physically deleted by cleanup cycle
       await t.test('C2. Expired file is physically removed from storage by cleanup cycle', async () => {
         const formData = new FormData();
         formData.append('file', new Blob(['Auto cleanup physical removal'], { type: 'text/plain' }), 'cleanup_test.txt');
@@ -435,7 +403,6 @@ export function registerV2Tests(urlOrGetter) {
         assert.equal(updatedRecord.status, FILE_STATUS.DELETED);
       });
 
-      // Test C3: Restart recovery for a record in DELETING state
       await t.test('C3. Interrupted DELETING record is reconciled and removed on cycle', async () => {
         const formData = new FormData();
         formData.append('file', new Blob(['Crash recovery test'], { type: 'text/plain' }), 'crash_rec.txt');
@@ -458,7 +425,6 @@ export function registerV2Tests(urlOrGetter) {
         assert.equal(updated.status, FILE_STATUS.DELETED);
       });
 
-      // Test C4: Active download lease coordinates with cleanup
       await t.test('C4. Active download lease prevents cleanup from deleting file while streaming', async () => {
         const formData = new FormData();
         formData.append('file', new Blob(['Lease coordination test'], { type: 'text/plain' }), 'lease.txt');
@@ -492,12 +458,8 @@ export function registerV2Tests(urlOrGetter) {
       });
     });
 
-    /* =========================================================================
-     * FEATURE D: SHA-256 Integrity Verification
-     * ========================================================================= */
     await suite.test('Feature D: SHA-256 integrity verification', async (t) => {
 
-      // Test D1: Correct SHA-256 stored at upload and verified at download
       await t.test('D1. Correct SHA-256 digest stored at upload and verified upon download', async () => {
         const plaintext = 'Integrity verification golden payload ' + crypto.randomUUID();
         const expectedSha256 = crypto.createHash('sha256').update(plaintext).digest('hex');
@@ -522,7 +484,6 @@ export function registerV2Tests(urlOrGetter) {
         assert.equal(bodyText, plaintext);
       });
 
-      // Test D2: Hash mismatch in metadata causes download rejection
       await t.test('D2. Modified expected digest triggers integrity check failure and rejects download', async () => {
         const plaintext = 'Plaintext with mutated expected hash';
         const formData = new FormData();
@@ -550,7 +511,6 @@ export function registerV2Tests(urlOrGetter) {
         assert.ok(data.error.includes('integrity verification failed'));
       });
 
-      // Test D3: Robust timing-safe comparison helper validation
       await t.test('D3. verifySha256Digest rejects invalid lengths, non-hex strings, and mismatched digests', () => {
         const hash1 = 'a'.repeat(64);
         const hash2 = 'a'.repeat(63) + 'b';

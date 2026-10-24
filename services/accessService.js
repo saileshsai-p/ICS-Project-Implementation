@@ -102,7 +102,7 @@ export async function canDownload(record, providedPassword = null, currentUser =
   //   return { allowed: false, reason: 'File scan pending or unverified.', status: 403 };
   // }
 
-  // 4. Physical file existence on server disk
+  // 6. Physical file existence on server disk
   const existsOnDisk = await fileExists(record.storedName);
   if (!existsOnDisk) {
     return {
@@ -112,7 +112,7 @@ export async function canDownload(record, providedPassword = null, currentUser =
     };
   }
 
-  // 5. Password protection verification
+  // 7. Password protection verification
   if (record.passwordHash && record.passwordSalt) {
     if (!providedPassword) {
       return {

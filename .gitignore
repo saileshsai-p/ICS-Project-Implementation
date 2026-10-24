@@ -1,14 +1,39 @@
 node_modules/
-storage/files/*
-!storage/files/.gitkeep
-storage/quarantine/*
-!storage/quarantine/.gitkeep
-storage/temp/*
-!storage/temp/.gitkeep
-data/*.tmp.json
-.DS_Store
-Thumbs.db
+
+# ---------------------------------------------------------------------------
+# Private file storage (ciphertext, quarantine, temporary staging).
+# The whole tree is runtime state: initStorage() in services/fileService.js
+# recreates storage/files, storage/quarantine and storage/temp on every start,
+# so nothing here needs to be committed to preserve the layout.
+# ---------------------------------------------------------------------------
+storage/
+
+# ---------------------------------------------------------------------------
+# Runtime state. These files hold real uploads, account records (email
+# addresses + scrypt password hashes) and live session identifiers. They are
+# generated automatically on first start and must not be committed.
+#
+# The directory is recreated by initMetadataStore() / initUserStore() /
+# initSessionStore() on every start, so it does not need to be committed.
+#
+# NOTE: these three files were tracked by earlier commits and have since been
+# untracked with `git rm --cached` (staged). History still contains them - see
+# the "Repository hygiene" section of README.md.
+# ---------------------------------------------------------------------------
+data/
+
+# ---------------------------------------------------------------------------
+# Secrets and local environment
+# ---------------------------------------------------------------------------
 .env
 .env.*
+!.env.example
 *.key
 *.pem
+
+# ---------------------------------------------------------------------------
+# OS / editor noise
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+.dist/

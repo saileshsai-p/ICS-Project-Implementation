@@ -10,100 +10,58 @@ A lightweight, high-security, locally runnable file-sharing web application base
 
 ## 1. Project Overview & Version 2 Evolution
 
-SecuShare enables users to share confidential files locally without relying on external cloud storage providers, paid subscriptions, or complex database infrastructures. In this second major release (**Version 2.0**), the application extends the original baseline prototype with four enterprise-grade security features:
+SecuShare shares files locally without cloud storage, subscriptions or a database. Version 2.0 extends the baseline paper prototype with six features (detailed in section 2): download limits and one-time links, AES-256-GCM encryption at rest, automatic expiry cleanup, SHA-256 integrity verification, user accounts with persistent sessions, and optional recipient-restricted links.
 
-1. **Download Limits & One-Time Links**: Enforce single-use or finite download limits with atomic server-side allowance consumption.
-2. **AES-256-GCM Encryption at Rest**: Envelope encryption using unique random 32-byte Data Encryption Keys (DEKs) wrapped under a server-side Master Key.
-3. **Automatic Expiry Cleanup**: Dedicated background worker that reconciles and physically removes expired files and temporary remnants.
-4. **File Integrity Verification using SHA-256**: Pre-encryption hashing and post-decryption timing-safe verification to prevent undetected tampering or bit-rot.
-5. **User Registration, Login & Persistent Sessions**: Server-managed persistent sessions stored in `data/sessions.json` surviving server restarts, timing-safe scrypt authentication, and rate limiting.
-6. **Recipient-Based File Authorization**: Optional email-restricted share links allowing uploaders to limit access to authorized recipient accounts.
+Intended for **local academic demonstration**, not production deployment.
 
 ### Architectural Principles
-- **100% Self-Contained**: Runs locally using Node.js ES modules and native built-ins (`node:crypto`, `node:fs/promises`, `node:stream`).
-- **Zero Third-Party Database**: Persistent JSON metadata storage featuring atomic writes (`.tmp` + rename) and a serialized queue.
-- **Single Access Gate**: Every download attempt passes through `accessService.js:canDownload()` before any file operation or decryption is initiated.
-- **Fail-Closed Security**: Missing master keys, corrupted ciphertext, altered tags, or hash mismatches result in immediate request termination without data leakage.
-- **Honest Security Disclaimers**: No false claims of virus scanning. Files are marked explicitly as `not_scanned`.
+- **Self-contained**: Node.js ES modules and native built-ins (`node:crypto`, `node:fs/promises`, `node:stream`); only `express` and `multer` as dependencies.
+- **No database**: JSON stores with atomic writes (`.tmp` + rename) and a serialized queue. Safe for a **single process only**.
+- **Single access gate**: every download passes `accessService.js:canDownload()` before any file operation or decryption.
+- **Fail-closed delivery**: corrupted ciphertext, altered tags, tampered wrapped keys and digest mismatches abort before any byte is sent; failures are logged server-side and returned as generic errors.
+- **Explicit key handling**: a fresh install generates and persists the master key before first use; an install that already holds encrypted data treats a missing key as a fatal startup error rather than generating a replacement (section 5).
+- **Honest disclaimers**: no virus scanning. Files are marked `not_scanned` (section 11).
 
 ---
 
-## 2. The Four Version 2 Security Enhancements
+## 2. Security Features
 
-### Feature A: Download Limits & One-Time Download Links
-- **Policies Supported**:
-  - `unlimited` (Default): File can be downloaded any number of times until link expiration.
-  - `one_time`: The link is revoked and exhausted immediately after the first successful download.
-  - `limited`: Permitted a configurable integer number of downloads (e.g. 3 or 5).
-- **Atomic Allowance Consumption**:
-  - Download count increments are managed inside `metadataService.js:consumeDownloadAllowance()` using a single-process serialized promise queue.
-  - Allowance is **only** consumed after all preflight checks pass (token validity, lifecycle status, expiration, password verification, GCM decryption, and SHA-256 integrity verification) immediately before streaming begins.
-  - Simultaneous requests cannot double-spend a one-time allowance.
-- **Client Transparency**:
-  - The download page informs recipients of remaining download allowances without leaking internal storage keys or paths.
+### A. Download Limits & One-Time Links
+Policies: `unlimited` (until expiry), `one_time` (revoked after the first successful download), `limited` (configurable integer).
 
-### Feature B: AES-256-GCM Encryption at Rest
-- **Envelope Key Hierarchy**:
-  - Each uploaded file is encrypted with a fresh, cryptographically random 32-byte Data Encryption Key (DEK).
-  - The DEK is encrypted (wrapped) using AES-256-GCM under the server's Master Key (`FILE_ENCRYPTION_MASTER_KEY`).
-  - Unique 12-byte initialization vectors (nonces) are generated for every content encryption and DEK-wrapping operation.
-- **Streaming Pipeline**:
-  - Multer receives the upload into a private temporary directory (`storage/temp/`).
-  - The plaintext stream is encrypted via `crypto.createCipheriv('aes-256-gcm', dek, nonce)` directly into permanent storage (`storage/files/<storedName>`).
-  - The original temporary upload is purged immediately after encryption.
-- **Pre-Delivery Authentication**:
-  - Decryption is streamed into a private temporary file. GCM authentication tags and unwrapped DEK tags are fully validated before any bytes are transmitted to the client.
+Allowance is consumed in `metadataService.js:consumeDownloadAllowance()` via a serialized promise queue, **only** after every preflight check passes (token, lifecycle status, expiry, password, GCM decryption, SHA-256 verification) and immediately before streaming. Simultaneous requests cannot double-spend a one-time link **within a single process**. The download page shows the remaining allowance without exposing storage keys or paths.
 
-### Feature C: Automatic Expiry Cleanup & Restart Recovery
-- **Lifecycle State Machine**:
-  - Records transition through explicit states: `active` -> `deleting` -> `deleted`.
-  - Links past `expiresAt` are immediately rejected by `canDownload()` with HTTP `410 Gone`.
-- **Background Worker**:
-  - `cleanupService.js` runs a non-overlapping loop at configurable intervals (default: 60s).
-  - Acquires read leases from `operationCoordinator.js` to ensure files currently being streamed are not unlinked mid-transfer.
-  - Automatically recovers interrupted deletions upon server reboot.
-  - Cleans up stale temporary decryption fragments in `storage/temp/`.
+### B. AES-256-GCM Encryption at Rest
+Each file gets a fresh random 32-byte Data Encryption Key (DEK), wrapped with AES-256-GCM under the server Master Key (`FILE_ENCRYPTION_MASTER_KEY`). Fresh 12-byte nonces are generated for both content encryption and DEK wrapping.
 
-### Feature D: SHA-256 File Integrity Verification
-- **Upload Stage**:
-  - Prior to encryption, the SHA-256 digest of the original file is computed via streaming pipeline (`fileIntegrityService.js`).
-  - The 64-character hexadecimal digest is recorded in `metadata.json`.
-- **Download Stage**:
-  - Following AES-GCM decryption, the recovered plaintext digest is recomputed.
-  - `crypto.timingSafeEqual` verifies that the recovered file matches the upload digest byte-for-byte.
-  - If a mismatch is detected, the temporary file is unlinked, no data is sent, and an internal diagnostic error is logged.
+Multer streams the upload into `storage/temp/`; the plaintext is encrypted with `crypto.createCipheriv('aes-256-gcm', dek, nonce)` straight into `storage/files/<storedName>`, and the temporary plaintext is deleted immediately afterwards. On download, decryption streams into a private temporary file and both the content tag and the unwrapped DEK tag are validated before any byte reaches the client.
 
-### Feature E: User Authentication & Persistent Sessions
-- **Registration**:
-  - Secure account creation via email and password (minimum 8 characters).
-  - Passwords hashed using `crypto.scrypt` with a unique 16-byte random salt and 64-byte key length. Plaintext passwords are never stored.
-  - Email uniqueness enforced on normalized lowercase addresses (`alice@example.com` is identical to `  Alice@Example.com `).
-- **Persistent Server-Side Sessions**:
-  - Sessions are managed server-side and persisted in `data/sessions.json` so they survive server restarts.
-  - 256-bit unguessable random session identifiers rotated upon login to prevent session fixation.
-  - Configurable lifetime via `SESSION_LIFETIME_MS` (default: **7 days**).
-  - Secure `HttpOnly`, `SameSite=Lax`, `Path=/` cookie configuration.
-- **Login Rate Limiting**:
-  - Repeated failed login attempts are rate-limited via sliding window (5 attempts per 5 minutes) returning HTTP `429 Too Many Requests`.
-- **Logout**:
-  - Invalidates the server-side session record in `data/sessions.json` and clears the cookie.
+### C. Automatic Expiry Cleanup & Restart Recovery
+Records move through `active` → `deleting` → `deleted`. Links past `expiresAt` are rejected by `canDownload()` with `410 Gone`.
 
-### Feature F: Recipient-Based File Authorization
-- **Optional Restricted Links**:
-  - Uploader can optionally specify one or more authorized recipient email addresses during file upload.
-  - Normalizes and deduplicates addresses (case-insensitive, trims surrounding whitespace).
-  - Anonymous uploads remain completely supported; uploaders do not need an account.
-- **Public vs. Restricted Links**:
-  - **Public Link** (no recipients specified): Accessible to anonymous visitors without login. Password, expiry, and download limits still apply.
-  - **Restricted Link** (recipients specified): Requires authentication. Logged-out visitors are prompted to log in or register. Only users whose account email matches an authorized recipient can download the file.
-- **Pending Permissions**:
-  - Uploaders can authorize email addresses of recipients who have not yet registered. When the recipient subsequently creates an account, access is granted automatically.
-- **Dual-Protection Flow (Recipient Authorization + File Password)**:
-  - If a restricted link also has a file password, the user must satisfy **both** requirements: be an authorized recipient **and** supply the correct file password. Neither bypasses the other.
-- **Safe Return Redirects**:
-  - Following login or registration, users are automatically returned to the intended share link. Open redirects are strictly blocked; only safe same-origin relative URLs are accepted.
-- **Address-Matching Disclaimer**:
-  - Authorization operates strictly by address matching. Email verification is intentionally not implemented.
+`cleanupService.js` runs a non-overlapping cycle (default 60 s), takes read leases from `operationCoordinator.js` so files being streamed are never unlinked mid-transfer, recovers interrupted deletions on restart, and removes stale temporary fragments. A record advances to `deleted` **only** when its file is confirmed gone; a failed deletion stays `deleting` with the error recorded for retry.
+
+### D. SHA-256 File Integrity Verification
+Before encryption the digest of the original file is computed by streaming (`fileIntegrityService.js`) and stored in `metadata.json`. After decryption it is recomputed and compared with `crypto.timingSafeEqual`.
+
+On mismatch the temporary plaintext is unlinked, the lease released, nothing is sent, and a diagnostic line is logged (`routes/download.js`) containing only the record id and stored filename — never keys, passwords, session identifiers or file contents. GCM authentication failures, tampered wrapped keys and digest mismatches are logged as distinct causes; clients get a generic message.
+
+> SHA-256 detects corruption and tampering of stored data. It is **not** malware detection (section 11).
+
+### E. Authentication & Persistent Sessions
+Accounts use email + password (min 8 chars), hashed with `crypto.scrypt` using a unique 16-byte salt and 64-byte key length; plaintext is never stored. Email uniqueness is enforced on the normalized lowercase form.
+
+Sessions live server-side in `data/sessions.json` and survive restarts, use 256-bit random identifiers rotated on login to prevent fixation, default to 7 days (`SESSION_LIFETIME_MS`), and set `HttpOnly`, `SameSite=Lax`, `Path=/` (plus `Secure` when `NODE_ENV=production`). Logout deletes the server-side record and clears the cookie. Failed logins are rate-limited to 5 per 5 minutes per IP+email, returning `429`.
+
+### F. Recipient-Based Authorization
+An uploader may optionally list authorized recipient emails (normalized, deduplicated). Anonymous uploads remain fully supported.
+
+- **Public link** (no recipients): downloadable without login; password, expiry and limits still apply.
+- **Restricted link**: requires login, and only an account whose email matches the list may download. Addresses that have not registered yet are honoured once that account is created.
+- A restricted link with a file password requires **both**; neither bypasses the other.
+- After login or registration the user returns to the intended share link; open redirects are blocked (same-origin relative paths only).
+
+> Authorization is **address matching only**. Email ownership is never verified (section 10).
 
 ---
 
@@ -118,14 +76,15 @@ SecuShare enables users to share confidential files locally without relying on e
 | **Streams & I/O** | `node:stream`, `node:fs/promises` | Memory-efficient streaming pipelines and safe file paths |
 | **Concurrency Guard** | Custom Promise Queue | Atomic metadata read-modify-write and download allowance checks |
 | **Frontend UI** | HTML5, CSS3, Vanilla JS | Cybersecurity dark aesthetic, responsive, zero external CDN dependencies |
-| **Test Runner** | Native `node:test` | 41 automated test scenarios covering baseline and Version 2 features |
+| **Test Runner** | Native `node:test` | 92 individual test cases across 5 suites, run against disposable temporary directories (see section 8) |
 
 ---
 
 ## 4. Architecture & Repository File Tree
 
 ```
-├── data/
+├── .env.example               # Placeholder environment template (copy to .env)
+├── data/                      # Runtime state - git-ignored, auto-created on first start
 │   ├── metadata.json          # Persistent JSON store for file records
 │   ├── users.json             # Persistent JSON store for user accounts (scrypt hashes)
 │   └── sessions.json          # Persistent JSON store for active server-side sessions
@@ -143,10 +102,11 @@ SecuShare enables users to share confidential files locally without relying on e
 ├── services/
 │   ├── accessService.js       # Central authorization gate (expiry, allowance, password, recipient check)
 │   ├── authService.js         # Open redirect validation and safe URL destination helpers
-│   ├── cleanupService.js      # Background worker for expiry cleanup and restart recovery
-│   ├── encryptionService.js   # AES-256-GCM envelope encryption, key wrapping, safe decryption
+│   ├── cleanupService.js      # Background expiry worker, retry-safe deletion, consistency audit
+│   ├── config.js              # Central runtime paths + disposable-location safety guard
+│   ├── encryptionService.js   # AES-256-GCM envelope encryption, master key lifecycle
 │   ├── fileIntegrityService.js# Streaming SHA-256 calculation and timing-safe comparison
-│   ├── fileService.js         # Unguessable storage filenames, path traversal defenses, unlinking
+│   ├── fileService.js         # Unguessable storage filenames, path traversal defenses, deletion results
 │   ├── malwareScanner.js      # Modular scanner interface (explicitly 'not_scanned')
 │   ├── metadataService.js     # Atomic metadata serialization, backward-compatible defaults
 │   ├── migrationService.js    # Safe migration of legacy plaintext files to Version 2
@@ -165,14 +125,19 @@ SecuShare enables users to share confidential files locally without relying on e
 │       ├── auth.js            # Client-side session state, navbar injection, and logout
 │       ├── download.js        # Recipient download logic, auth required/denied states
 │       └── upload.js          # Drag-and-drop, upload progress, recipient list parsing
-├── storage/
+├── storage/                   # Runtime state - git-ignored, auto-created on first start
 │   ├── files/                 # Permanent private encrypted storage (AES-256-GCM ciphertext)
-│   ├── quarantine/            # Reserved for future ClamAV malware quarantine
+│   ├── quarantine/            # Reserved for future ClamAV malware quarantine (unused)
 │   └── temp/                  # Multer holding directory and verified decryption staging
 ├── tests/
-│   ├── app.test.js            # Main test runner entrypoint & baseline suite (16 tests)
-│   ├── v2.test.js             # Version 2 security test suite (24 tests across Features A-D)
-│   └── auth_authorization.test.js # Authentication & recipient authorization suite (46 tests)
+│   ├── setup.mjs              # Isolation bootstrap: redirects all storage to a temp dir
+│   ├── helpers/
+│   │   └── childRunner.js     # Disposable installations + child-process probes
+│   ├── app.test.js            # Entrypoint & baseline suite (16 cases)
+│   ├── v2.test.js             # Version 2 security suite (19 cases, Features A-D)
+│   ├── auth_authorization.test.js # Authentication & recipient authorization (39 cases)
+│   ├── keyManagement.test.js  # Master key lifecycle & isolation guard (8 cases)
+│   └── resilience.test.js     # Cleanup failures, streaming race, tamper matrix (10 cases)
 └── README.md                  # Comprehensive technical documentation & experimental evaluation
 ```
 
@@ -194,64 +159,82 @@ openssl rand -hex 32
 ```
 
 ### Environment Variable Configuration
-Create a local `.env` file or export the variable into your shell:
+Copy the template and edit it:
 ```bash
-# In Linux/macOS
+cp .env.example .env          # Linux / macOS
+Copy-Item .env.example .env   # Windows PowerShell
+```
+Then set `FILE_ENCRYPTION_MASTER_KEY` inside `.env`. Alternatively export it into the shell:
+```bash
+# Linux/macOS
 export FILE_ENCRYPTION_MASTER_KEY="your_64_character_hex_master_key_here"
 
-# In Windows PowerShell
+# Windows PowerShell
 $env:FILE_ENCRYPTION_MASTER_KEY="your_64_character_hex_master_key_here"
 ```
+Quoted and unquoted values in `.env` are both accepted; surrounding quotes are stripped.
+
+### Key Resolution Behaviour
+Resolved once at startup: (1) `process.env.FILE_ENCRYPTION_MASTER_KEY`, (2) the `.env` entry, (3) first-run initialization — **only** for a verifiably fresh installation.
+
+Case 3 is deliberately narrow: *fresh* means `storage/files/` holds no files **and** no metadata record has encryption enabled. A new key is then generated, appended to `.env`, and **read back and verified before anything is encrypted with it**, so first-run files stay decryptable after a restart. If it cannot be persisted, startup fails rather than using a key that would be lost.
+
+If encrypted data already exists and the key is missing, startup **fails** and no replacement is generated — a new key could not decrypt existing files and would mask the real problem. A malformed key is also a hard error and is never overwritten.
 
 > [!CAUTION]
 > **Key Backup & Disaster Recovery**:  
-> In envelope encryption, file Data Encryption Keys (DEKs) are wrapped under the Master Key. **Loss of the Master Key renders all stored ciphertext permanently unrecoverable.** Always store an encrypted backup of the Master Key in a secure password manager or key vault.
+> In envelope encryption, file Data Encryption Keys (DEKs) are wrapped under the Master Key. **Loss of the Master Key renders all stored ciphertext permanently unrecoverable.** There is no key rotation and no recovery path in this project. Always store a backup of the Master Key somewhere safe.
+
+---
+
+## 5b. Environment Variables Reference
+
+Every variable below was verified against the source. All are optional except the master key.
+
+| Variable | Default | Read in | Purpose |
+|---|---|---|---|
+| `FILE_ENCRYPTION_MASTER_KEY` | *(see section 5)* | `services/encryptionService.js` | 32-byte master key (64 hex or 44 base64 chars) wrapping every per-file DEK. **Required** once encrypted data exists. |
+| `PORT` | `3000` | `server.js` | HTTP listen port. |
+| `NODE_ENV` | *(unset)* | `middleware/authMiddleware.js` | When `production`, adds `Secure` to the session cookie. Leave unset for plain-HTTP localhost, or the browser will drop the cookie. |
+| `MAX_FILE_SIZE_BYTES` | `52428800` (50 MB) | `middleware/uploadValidation.js` | Maximum accepted upload size. |
+| `MAX_EXPIRY_DAYS` | `365` | `routes/upload.js` | Upper bound on link lifetime. The lower bound is fixed at 1 minute. |
+| `SESSION_LIFETIME_MS` | `604800000` (7 days) | `services/sessionService.js` | Session lifetime. |
+| `SESSION_COOKIE_NAME` | `secushare_session` | `services/sessionService.js` | Session cookie name. |
+| `CLEANUP_INTERVAL_MS` | `60000` | `services/cleanupService.js` | Interval between expiry-cleanup cycles. |
+| `TEMP_FILE_MAX_AGE_MS` | `900000` (15 min) | `services/cleanupService.js` | Age at which an *unreferenced* temp file is removed. Files in use by a live request are always skipped. |
+| `SECUSHARE_DATA_DIR` | `./data` | `services/config.js` | **Testing only.** Redirects the JSON stores. |
+| `SECUSHARE_STORAGE_DIR` | `./storage` | `services/config.js` | **Testing only.** Redirects file storage. |
+| `SECUSHARE_ENV_FILE` | `./.env` | `services/config.js` | **Testing only.** Redirects the key file. |
+
+The three `SECUSHARE_*` variables exist so tests and benchmarks can never touch real data. The test suite and benchmark set them automatically and **refuse to run** if they still resolve inside the project tree.
 
 ---
 
 ## 6. Installation & Running the Application
 
-### 1. Install Dependencies
+**Prerequisites:** Node.js **v20.6+** (verified on v24.14.1 — the test script's `--import` needs v20.6+) and npm. No database, external service or network access required.
+
 ```bash
 npm install
+
+cp .env.example .env          # Linux / macOS
+Copy-Item .env.example .env   # Windows PowerShell
+# paste a key from: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+
+npm start       # or: npm run dev   (auto-reload)
 ```
 
-### 2. Configure Environment
-Copy `.env.example` to `.env` and set your `FILE_ENCRYPTION_MASTER_KEY`:
-```bash
-cp .env.example .env
-```
+Then open `http://localhost:3000`.
 
-### 3. Start the Server
-**Development Mode (auto-reload on code change):**
-```bash
-npm run dev
-```
-
-**Standard Production Mode:**
-```bash
-npm start
-```
-Visit `http://localhost:3000` in your web browser.
+Skipping the `.env` step is safe on a brand-new installation — a key is generated and persisted on first start. On an installation that already has uploads, a missing key is a fatal startup error by design (section 5).
 
 ---
 
 ## 7. Migration of Legacy Files (Version 1 to Version 2)
 
-Existing files uploaded under Version 1 were stored unencrypted. SecuShare Version 2 provides both **on-demand migration** and an automated **CLI migration script**:
+Version 1 stored files unencrypted. `npm run migrate` upgrades them in place.
 
-```bash
-npm run migrate
-```
-
-### Migration Safeguards:
-1. Verifies that the legacy file exists in `storage/files/`.
-2. Computes the original SHA-256 digest.
-3. Encrypts the file using AES-256-GCM with a newly generated DEK wrapped under the Master Key.
-4. Performs a test decryption in memory/temp and confirms that the SHA-256 digest matches.
-5. Safely overwrites the disk storage file with ciphertext.
-6. Updates `metadata.json` with the new `encryption`, `integrity`, and `storageFormat: 'encrypted-v2'` blocks.
-7. Preserves share tokens, passwords, expiration timestamps, and download limits.
+Per record it verifies the legacy file exists, computes the original SHA-256, encrypts it under a fresh DEK wrapped by the Master Key, **test-decrypts and confirms the digest matches before replacing anything**, then updates `metadata.json` with the `encryption`, `integrity` and `storageFormat: 'encrypted-v2'` blocks. Share tokens, passwords, expiry timestamps and download limits are preserved.
 
 ---
 
@@ -259,165 +242,216 @@ npm run migrate
 
 The test suite runs using Node's native test runner (`node:test`) and spins up the server on an ephemeral port.
 
-### Run All Tests
+### Running Tests Safely
+
 ```bash
 npm test
 ```
 
-### Verified Test Results (86 of 86 Passing):
+That is the **only** supported command. It expands to:
 
 ```
-✔ Suite: Secure File Sharing Baseline Implementation (16 tests)
-  ✔ 1. Upload a valid file
-  ✔ 2. Reject a missing file
-  ✔ 3. Reject a file that exceeds the configured size limit (50MB)
-  ✔ 4. Upload a file without a password
-  ✔ 5. Upload a file with a password
-  ✔ 6. Download with the correct password
-  ✔ 7. Reject an incorrect password
-  ✔ 8. Reject an expired link
-  ✔ 9. Reject an invalid or nonexistent token
-  ✔ 10. Reject a request for a missing stored file
-  ✔ 11. Confirm that uploaded files cannot be accessed through public static URLs
-  ✔ 12. Confirm that metadata persists across application restarts
-  ✔ 13. Confirm that files are marked not_scanned in this version
-  ✔ 14. Confirm that no file is incorrectly reported as malware-free
-  ✔ 15. Flexible expiry allows 1 minute expiration
-  ✔ 16. Flexible expiry allows custom number of days (e.g. 14 days)
-
-✔ Suite: SecuShare Version 2 Security Enhancements (24 tests)
-  ▶ Feature A: Download limits and atomic consumption (5 tests)
-    ✔ A1. One-time download allows 1st attempt and rejects 2nd attempt
-    ✔ A2. Configurable download limit allows exact number of downloads (3 of 3)
-    ✔ A3. Incorrect password does not consume download allowance
-    ✔ A4. Concurrent requests on a one-time link allow strictly 1 download
-    ✔ A5. Download limit and count persist in metadata storage
-  ▶ Feature B: AES-256-GCM encryption at rest (7 tests)
-    ✔ B1. Permanent stored file is encrypted ciphertext (differs from plaintext)
-    ✔ B2. Binary files (random bytes) are preserved with byte-for-byte fidelity
-    ✔ B3. Tampered ciphertext causes GCM authentication failure
-    ✔ B4. Tampered wrapped DEK metadata is rejected
-    ✔ B5. Wrong master key fails safely without exposing data
-    ✔ B6. Temporary plaintext file in temp/ is removed after download
-    ✔ B7. Legacy plaintext records can be migrated to encrypted-v2 safely
-  ▶ Feature C: Automatic deletion after expiry and restart recovery (4 tests)
-    ✔ C1. Expired file is rejected immediately prior to cleanup
-    ✔ C2. Expired file is physically removed from storage by cleanup cycle
-    ✔ C3. Interrupted DELETING record is reconciled and removed on cycle
-    ✔ C4. Active download lease prevents cleanup from deleting file while streaming
-  ▶ Feature D: SHA-256 integrity verification (3 tests)
-    ✔ D1. Correct SHA-256 digest stored at upload and verified upon download
-    ✔ D2. Modified expected digest triggers integrity check failure and rejects download
-    ✔ D3. verifySha256Digest rejects invalid lengths, non-hex strings, and mismatched digests
-
-✔ Suite: SecuShare Authentication & Recipient Authorization (46 tests)
-  ▶ Section 1: Registration and Accounts (10 tests)
-    ✔ 1. Successful registration creates account and returns 201
-    ✔ 2. Duplicate exact email registration is rejected with 409
-    ✔ 3. Duplicate rejection when capitalization differs
-    ✔ 4. Duplicate rejection when surrounding whitespace differs
-    ✔ 5. Passwords are never stored in plaintext
-    ✔ Register second user bob@example.com
-    ✔ 6. Correct password login succeeds and returns session cookie
-    ✔ 7. Incorrect password login fails with generic 401
-    ✔ 8. Invalid input rejected safely (short password, bad email syntax)
-    ✔ 9. Repeated failed logins are rate-limited with 429
-  ▶ Section 2: Persistent Server Sessions (6 tests)
-    ✔ 10. Successful login creates a server-managed session stored in sessions.json
-    ✔ 11. Authenticated session remains valid on /api/auth/me
-    ✔ 12. Expired sessions are rejected and invalidated
-    ✔ 13. Logout invalidates the session on the server
-    ✔ 14. An invalidated session cannot access /api/auth/me
-    ✔ 15. Session cookie sets HttpOnly and SameSite attributes
-  ▶ Section 3: Public Links Remain Public (4 tests)
-    ✔ 16. Anonymous upload without login works
-    ✔ 17. Public link can be downloaded without login
-    ✔ 18. Public link with file password requires password from anonymous visitor
-    ✔ 19. Public one-time link enforces download limit
-  ▶ Section 4: Restricted Links and Recipient Authorization (10 tests)
-    ✔ 20. Logged-out visitor cannot download restricted file (401)
-    ✔ 21. Logged-out visitor receives 401 with redirectUrl on metadata query
-    ✔ 22. Redirect flow preserves valid relative destination
-    ✔ 23. Redirect validation prevents open redirects
-    ✔ 24. Authorized user (Alice) can access metadata and download file
-    ✔ 25. Unauthorized logged-in user (Bob) receives 403 Forbidden
-    ✔ 26. Recipient authorization ignores case and whitespace differences
-    ✔ 27. Pending recipient permission works when user registers later
-    ✔ 28-30. File password + Recipient authorization both required
-    ✔ 31. Protected file bytes are never returned on failed authorization
-  ▶ Section 5: Existing Security and Lifecycle Preservation (9 tests)
-    ✔ 32. Expiry enforcement rejects expired restricted files with 410
-    ✔ 33. Download limits still enforced on restricted files
-    ✔ 34. One-time download allows single access on restricted file
-    ✔ 35. Concurrent requests cannot bypass one-time download limit
-    ✔ 36. AES-256-GCM encryption at rest and SHA-256 integrity preserved
-    ✔ 37. Tampered SHA-256 digest prevents file delivery
-    ✔ 38. not_scanned scan status preserved and not reported clean
-    ✔ 39. INFECTED file is blocked by accessService with 403
-    ✔ 40. Share links are immutable: PATCH, PUT, DELETE routes do not exist (404)
-
-Total: 86 tests passed (0 failed, 0 skipped, duration ~2.5s)
+node --test --import ./tests/setup.mjs tests/app.test.js
 ```
+
+`tests/setup.mjs` must load before any application module, because the services resolve their paths at import time. It creates a unique temp directory, points `SECUSHARE_DATA_DIR` / `SECUSHARE_STORAGE_DIR` / `SECUSHARE_ENV_FILE` at it, generates a throwaway key (overriding any real one), asserts the redirection took effect, and on exit removes only what it created.
+
+> [!IMPORTANT]
+> **Do not run `node --test tests/app.test.js` directly.** Without the bootstrap the suites would operate on real data — the authentication suite resets the user and session stores. `assertDisposableDataLocations()` in `services/config.js` makes this a hard failure instead: the run aborts before any file is touched, naming the missing variable. Covered by test K8.
+
+Real `data/`, `storage/` and `.env` are never read or written by a test run, verified by SHA-256 hashing before and after a full run.
+
+### How to Read the Test Count
+
+Node's summary line reports **109 tests**, but that number counts grouping wrappers as tests. The honest figure is:
+
+| Level | Count | What it is |
+|---|---|---|
+| Top-level suites | 5 | `test('Suite: ...')` containers |
+| Group wrappers | 12 | `Feature A-D`, `Section 1-5`, `Section 1-3` containers |
+| **Individual test cases** | **92** | Actual assertions-bearing tests |
+| Node's reported total | 109 | 92 cases + 17 containers |
+
+Per-suite breakdown of the 92 cases:
+
+| Suite | File | Cases |
+|---|---|---|
+| Secure File Sharing Baseline Implementation | `app.test.js` | 16 |
+| SecuShare Version 2 Security Enhancements | `v2.test.js` | 19 |
+| SecuShare Authentication & Recipient Authorization | `auth_authorization.test.js` | 39 |
+| Master Key Lifecycle | `keyManagement.test.js` | 8 |
+| Resilience and Failure Handling | `resilience.test.js` | 10 |
+| **Total** | | **92** |
+
+### Latest Verified Result
+
+```
+ℹ tests 109      (= 92 individual cases + 17 suite/group wrappers)
+ℹ pass 109
+ℹ fail 0
+ℹ skipped 0
+ℹ todo 0
+```
+
+Tests exercise real AES-256-GCM encryption, real SHA-256 hashing, real filesystem I/O and a real HTTP server. Nothing security-relevant is mocked.
+
+**Master Key Lifecycle** (`keyManagement.test.js`, K1–K8) — each case runs in its own child process with its own disposable installation, since key resolution depends on filesystem state at startup. Covers: fresh-install generation, decryptability from a later process, unpersistable key, missing key with existing data, ciphertext-only detection, quoted vs unquoted `.env` values, malformed key, and the isolation guard.
+
+**Resilience** (`resilience.test.js`, R1–R10) — a failed deletion stays `deleting` and is never reported `deleted`; the consistency audit reports orphans without removing them; a 24 MB download paused mid-stream survives a cleanup cycle byte-for-byte; a refused download releases its lease; plus six tampering scenarios asserted individually (section 9).
 
 ---
 
 ## 9. Experimental Performance Evaluation
 
-To assess the overhead introduced by AES-256-GCM encryption, key wrapping, and SHA-256 integrity verification, real empirical measurements were gathered using `node scripts/benchmark.js` on the target test environment.
+### Running the Benchmark Safely
 
-### Test Environment
+```bash
+npm run benchmark                    # 5 trials per size (default)
+BENCH_TRIALS=10 npm run benchmark    # more trials
+```
+
+Like the test suite, the benchmark builds its **own disposable installation** in the OS temp folder with a throwaway key, refuses to start if the configured paths are not disposable, and removes only what it created. It never measures, modifies or pollutes real project data. Earlier versions of this script wrote ~25 permanent records into the real `data/` and `storage/` on every run; that is fixed.
+
+### Test Environment (recorded by the script itself)
 - **Node.js**: v24.14.1
-- **Platform**: Windows 11 (win32 x64)
-- **Trials**: 3 repeated trials per payload size
-- **Storage Media**: NVMe Solid State Drive
+- **Platform**: win32 x64, Windows build 10.0.26300
+- **CPU**: AMD Ryzen 7 7730U, 16 logical processors
+- **Memory**: 13.84 GiB
+- **Trials**: 5 per payload size, fresh random (incompressible) payload per trial
+- **Topology**: client and server in the **same Node process** over loopback HTTP
 
-### Latency & Storage Overhead Benchmark
+### Latency
 
-| File Size | Avg Upload Latency (AES-GCM + SHA-256) | Avg Download Latency (Decrypt + Verify) | Storage Overhead on Ciphertext File | Metadata JSON Overhead |
+Timing boundaries are explicit. Upload = request dispatch until the JSON response is parsed. Download = request dispatch until the **complete** response body has been received. Both therefore include loopback HTTP transfer, multipart parsing, SHA-256 hashing, AES-256-GCM work, JSON metadata I/O and response handling — they are end-to-end request timings, not isolated cryptographic throughput.
+
+| File Size | Upload mean | Upload median | Upload SD | Download mean | Download median | Download SD |
+|---|---|---|---|---|---|---|
+| **10 KB** | 21.54 ms | 12.17 ms | 19.71 ms | 12.44 ms | 11.26 ms | 2.65 ms |
+| **100 KB** | 11.45 ms | 11.58 ms | 1.25 ms | 11.64 ms | 11.16 ms | 1.07 ms |
+| **1 MB** | 19.38 ms | 19.53 ms | 1.54 ms | 18.51 ms | 18.68 ms | 1.10 ms |
+| **10 MB** | 85.36 ms | 85.65 ms | 3.74 ms | 96.86 ms | 98.06 ms | 5.89 ms |
+
+> [!NOTE]
+> These are figures from **one run on one machine**. They do not demonstrate consistent performance. Note the 10 KB upload standard deviation (19.71 ms) exceeding its own median (12.17 ms) — a first-trial warm-up artefact, which is exactly why median and SD are reported rather than a lone mean. Repeated runs vary by tens of percent.
+
+### On-Disk Storage Overhead
+
+Measured by locating the ciphertext for **each individual upload via its own metadata record** and calling `stat()` on that one file:
+
+```
+Storage overhead (%) = ((stored ciphertext size − original size) / original size) × 100
+```
+
+| File Size | Original bytes | Stored ciphertext bytes | Overhead bytes | Overhead % |
 |---|---|---|---|---|
-| **10 KB** | 19.17 ms | 12.89 ms | **0 bytes** (CTR mode) | +380 bytes |
-| **100 KB** | 9.55 ms | 10.81 ms | **0 bytes** (CTR mode) | +380 bytes |
-| **1 MB** | 16.80 ms | 16.65 ms | **0 bytes** (CTR mode) | +380 bytes |
-| **10 MB** | 84.33 ms | 82.05 ms | **0 bytes** (CTR mode) | +380 bytes |
+| **10 KB** | 10,240 | 10,240 | 0 | 0.0000 % |
+| **100 KB** | 102,400 | 102,400 | 0 | 0.0000 % |
+| **1 MB** | 1,048,576 | 1,048,576 | 0 | 0.0000 % |
+| **10 MB** | 10,485,760 | 10,485,760 | 0 | 0.0000 % |
 
-*Observations*:
-1. **Zero Storage Bloat on Disk**: Because AES-GCM operates as a stream cipher (CTR mode), the ciphertext length is identical to the plaintext length. Authentication tags and nonces are stored compactly in `metadata.json`.
-2. **Sub-100ms Latency for 10 MB**: Streaming cryptographic pipelines process 10 MB files end-to-end in under 85 milliseconds.
+Identical across all 5 trials at every size. AES-GCM is a **counter-based (CTR) construction**, so ciphertext length equals plaintext length; the 12-byte nonce and 16-byte authentication tag live in `metadata.json`, accounted for below.
 
-### Security Trial Results
+> [!WARNING]
+> **Methodology correction.** The earlier benchmark computed `downloaded_length − original_length`, which is 0 whenever a download is correct and measured nothing about storage. The 0 % result is genuine, but only the current method establishes it.
 
-| Security Scenario | Trials Conducted | Successful Enforcement | Accuracy Rate |
+### Metadata Overhead (measured, not assumed)
+
+Measured as the byte difference in `metadata.json` before and after one controlled 1 KB upload:
+
+| Measurement | Bytes | Definition |
+|---|---|---|
+| `metadata.json` growth from one upload | **1,284** | File size after minus before; one 1 KB upload; `JSON.stringify` indent 2 |
+| Whole record, serialized | 1,210 | All fields of the new record, indent 2 |
+| `encryption` + `integrity` + `storageFormat` only | 644 | The crypto-specific additions, indent 2 |
+
+This figure depends on pretty-print indentation and filename length, so it describes this configuration rather than a universal constant. The previously documented "+380 bytes" was never measured by the script and was incorrect.
+
+### Security Enforcement Trials
+
+| Scenario | Method | Result |
+|---|---|---|
+| **Concurrent one-time link** | 10 simultaneous requests on a `one_time` link | 1 allowed (200), 9 refused (410) — correct. Single-process scope only. |
+| **Incorrect expected SHA-256 digest** | Replace stored digest, ciphertext intact | Refused 500, reported as integrity failure |
+| **Modified ciphertext** | Flip 1 byte on disk | Refused 500, GCM authentication failure |
+| **Modified authentication tag** | Flip 1 byte of stored tag | Refused 500, GCM authentication failure |
+| **Modified wrapped data key** | Flip 1 byte of wrapped DEK | Refused 500, key unwrap failure |
+| **Truncated ciphertext** | Remove 5 trailing bytes | Refused 500, GCM authentication failure |
+| **Missing encrypted file** | Unlink the ciphertext | Refused 404, reported as not found |
+
+All 6 behaved as specified (6/6). Each also asserts that **no plaintext appears in the response** and **no download allowance is consumed**.
+
+> [!WARNING]
+> **Methodology correction.** The earlier benchmark claimed "5 tampered files rejected via GCM auth failure", but it only overwrote the *expected digest* and never touched ciphertext, accepting any HTTP 500 as proof. The scenarios above are distinct and each asserted against its own failure class.
+
+### Expiry Cleanup Timing
+
+| Cycle duration | Records scanned | Files deleted | Deletion verified |
 |---|---|---|---|
-| **Concurrent One-Time Link Requests** | 10 simultaneous requests | 1 permitted (200), 9 rejected (410) | **100%** |
-| **Tampered Ciphertext Detection** | 5 tampered files | 5 rejected via GCM auth failure | **100%** |
-| **Modified Content / Hash Mismatch** | 5 modified records | 5 rejected via SHA-256 mismatch | **100%** |
-| **Expired File Removal Latency** | Cleanup execution cycle | File deleted from disk in **2.07 ms** | **100%** |
+| **6.81 ms** | 29 | 1 | Yes — fixture present before, absent after, record status `deleted` |
+
+The benchmark creates its own fixture, expires it, runs one cycle, and confirms the file is gone and the record reached `deleted` before reporting the timing. This is the cost of **one full cycle over 29 records**, including rewriting the whole JSON store — not a per-file cost, and it grows with record count. The previously documented "2.07 ms" was not measured and verified no deletion.
+
+> [!CAUTION]
+> None of these results constitute penetration testing, malware detection, or evidence of production readiness.
 
 ---
 
 ## 10. Security Limitations & Operational Assumptions
 
-1. **Single-Process Metadata**: The serialized queue in `metadataService.js` guarantees strict atomicity within a single Node.js process. Deploying multiple load-balanced instances sharing the same JSON file would require a shared transactional database (e.g. SQLite with WAL mode, PostgreSQL, or Redis distributed locks).
-2. **Local Metadata Store Integrity**: If an attacker gains administrative write access to both the filesystem and `metadata.json`, they could alter both ciphertext and expected digests. AES-GCM authentication protects against ciphertext tampering when the wrapped key in metadata remains intact.
-3. **Malware Scanning Inactivity**: Active antivirus detection (ClamAV) remains deliberately inactive in Version 2. Files are explicitly marked `not_scanned`.
+This application is built for **local academic demonstration**. It is not production-ready, and the following are known, accepted limitations rather than oversights.
+
+1. **Single-Process Metadata**: The serialized queue in `metadataService.js` guarantees atomicity within a single Node.js process **only**. Every verified concurrency result in this document is scoped to one process. Running multiple instances against the same JSON files would allow lost updates and could let a one-time link be consumed twice; that would require a shared transactional store (SQLite WAL, PostgreSQL, Redis locks). **No multi-process safety is claimed.**
+2. **Non-Atomic Write Fallback**: Writes use `.tmp` + `rename`, which is atomic. On Windows, if `rename` fails with `EPERM`/`EBUSY` after retries, the code falls back to overwriting the target directly — that fallback is not atomic, and there is no `fsync`, so a crash at that moment could corrupt the store.
+3. **Local Metadata Store Integrity**: Digests and wrapped keys live in the same unauthenticated `metadata.json` as the records. An attacker with write access to both the filesystem and that file could alter ciphertext and expected digests together. AES-GCM protects ciphertext tampering only while the wrapped key in metadata remains intact.
+4. **Key and Data Co-location**: The master key (`.env`), the wrapped per-file keys (`metadata.json`) and the ciphertext (`storage/files/`) all sit in the same project folder. Encryption at rest protects the stored files; it does **not** protect against anyone who can read the whole directory.
+5. **No Key Rotation**: `masterKeyId` is a fixed `'v1'`. There is no mechanism to re-wrap existing DEKs under a new master key, and no AAD binding ciphertext to its record.
+6. **Malware Scanning Inactivity**: Active antivirus detection (ClamAV) is deliberately **out of scope**. See section 11.
+7. **Anonymous Uploads, No File Ownership**: Uploading requires no account and records carry no owner. This is an intentional design decision carried over from the baseline. `requireAuth` exists but is applied to no route; authentication governs recipient-restricted downloads only.
+8. **Recipient Restriction Is Address Matching**: A restricted link checks the logged-in account's email string against the authorized list. Email ownership is **never verified**, so anyone who holds the link and registers a listed address will pass. This is documented, not fixed.
+9. **Rate Limiting Is In-Memory and Narrow**: Login limiting is 5 failures per 5 minutes keyed by IP **and** email, so many different emails from one IP are not throttled; counters reset when the process restarts. Registration records no failures and is effectively unlimited. The unauthenticated `GET` download route has no rate limit, and each request on an unlimited link triggers a full decrypt and SHA-256 pass.
+10. **Cookie `Secure` Flag Is Environment-Dependent**: `Secure` is set only when `NODE_ENV=production`. Correct for http://localhost, but it must be enabled for any real deployment.
+11. **Deleted Records Are Retained Indefinitely**: Records transition to `deleted` but are never purged, so filenames, recipient lists and wrapped keys persist and `metadata.json` grows without bound.
+12. **Orphan Files Are Reported, Not Removed**: The startup audit reports stored files with no metadata record but deletes nothing, since an "orphan" may equally be a file whose metadata write was interrupted. Resolution is manual by design.
+13. **No Penetration Testing**: No adversarial security assessment has been performed. The frontend has not been formally reviewed for XSS, and the CSP permits `'unsafe-inline'`.
 
 ---
 
-## 11. Future ClamAV Integration Blueprint
+## 10b. Repository Hygiene & Runtime Data
 
-When ready to implement active antivirus scanning, integrate ClamAV via the prepared hook points:
+`data/*.json` are **runtime state**, not source code: upload metadata, account records (emails + scrypt hashes) and live session identifiers.
 
-1. **`services/malwareScanner.js`**:
-   Connect to `clamd` via TCP socket (`127.0.0.1:3310`) or local UNIX socket, stream the file with `INSTREAM`, and parse the result (`clean` vs `infected`).
-2. **`routes/upload.js`**:
-   The upload handler contains an explicit hook:
-   ```javascript
-   // Scan original temp file before encryption:
-   const scanResult = await scanFile(tempFilePath);
-   if (scanResult.status === SCAN_STATUS.INFECTED) {
-     await cleanupFile(tempFilePath);
-     return res.status(400).json({ error: 'Malware detected' });
-   }
-   ```
-3. **`services/accessService.js`**:
-   Activate strict status checking (`if (record.scanStatus !== SCAN_STATUS.CLEAN) return { allowed: false };`).
+**Status.** `.gitignore` excludes `data/`, `storage/`, `.env`, `.env.*` (except `.env.example`), `*.key`, `*.pem`. `.env` has **never** been committed (`git log --all -- .env` is empty). The three `data/*.json` files *were* committed earlier and have since been untracked with `git rm --cached` — **staged, pending commit**. They remain on disk and the app keeps working.
+
+**Untracking ≠ erasing history.** Their contents still exist in earlier commits. Removing them from history needs a rewrite, a force-push, and breaks every clone:
+
+```bash
+# Requires git-filter-repo. Destructive and irreversible - back up the repo first.
+git filter-repo --path data/metadata.json --path data/users.json --path data/sessions.json --invert-paths
+```
+
+> [!IMPORTANT]
+> This rewrite has **not** been performed. It must be a deliberate decision.
+
+**If the remote is public**, treat the committed contents as disclosed: emails are public; passwords are salted scrypt hashes (not plaintext) but offline-crackable, so change any real reused password. Invalidate the committed session IDs by clearing `data/sessions.json` (this logs everyone out, so it was not done automatically). Then either rewrite history or make the repository private. For submission, the simplest path is to keep the files untracked and ship empty `[]` stores.
+
+---
+
+## 11. Malware Scanning: Explicit Scope Exclusion
+
+> **Active ClamAV scanning was excluded from the project scope. The implementation does not establish that uploaded files are malware-free.**
+
+A deliberate scope decision, not an unfinished feature. Precisely:
+
+- No scanner is ever invoked. `malwareScanner.js:scanFile()` only returns `not_scanned`, and although `routes/upload.js` imports it, the sole reference is inside a comment block.
+- Every upload is recorded `scanStatus: 'not_scanned'`.
+- `accessService.js:canDownload()` rejects only `'infected'`; the stricter `!== 'clean'` rule is **commented out**, so `not_scanned` files download normally. Test 39 marks a record `infected` by hand and confirms a 403 — that exercises the gate, not a scanner.
+- `storage/quarantine/` is created but unused. No ClamAV/`clamd`/`clamdjs` dependency exists.
+
+What *is* verified cryptographically is that a download is byte-for-byte identical to the upload (SHA-256 + AES-GCM). **File integrity is not file safety:** a malicious file would be stored, verified and delivered intact like any other.
+
+### Future ClamAV Integration Blueprint
+Prepared hook points, if scanning were added later:
+
+1. **`malwareScanner.js`** — connect to `clamd` (TCP `127.0.0.1:3310` or UNIX socket), stream via `INSTREAM`, parse `clean` vs `infected`.
+2. **`routes/upload.js`** — scan the temp file before encryption; on `INFECTED`, delete it and return 400. The hook comment marks the spot.
+3. **`accessService.js`** — enable the strict check: `if (record.scanStatus !== SCAN_STATUS.CLEAN) return { allowed: false };`

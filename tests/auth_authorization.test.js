@@ -3,17 +3,14 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { fileURLToPath } from 'node:url';
 
+import { DATA_DIR, assertDisposableDataLocations } from '../services/config.js';
 import { validateRedirectUrl } from '../services/authService.js';
-import { normalizeEmail } from '../services/userService.js';
-import { getAllFiles, updateFileRecord, getFileByToken } from '../services/metadataService.js';
+import { updateFileRecord, getFileByToken } from '../services/metadataService.js';
 import { SCAN_STATUS } from '../services/malwareScanner.js';
-import { parseCookies } from '../middleware/authMiddleware.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const DATA_DIR = path.resolve(__dirname, '../data');
+// Resolve the stores through the shared configuration so that this suite always
+// targets the disposable directories prepared by tests/setup.mjs.
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 
@@ -23,7 +20,11 @@ const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
  */
 export function registerAuthTests(getBaseUrl) {
   test('Suite: SecuShare Authentication & Recipient Authorization', async (t) => {
-    // Ensure clean state for test run
+    // This suite resets the user and session stores. Refuse outright if the
+    // configured location is a real application directory rather than the
+    // disposable one prepared by tests/setup.mjs.
+    assertDisposableDataLocations('The authentication test suite (it resets users and sessions)');
+
     await fs.mkdir(DATA_DIR, { recursive: true });
     await fs.writeFile(USERS_FILE, JSON.stringify([], null, 2), 'utf-8');
     await fs.writeFile(SESSIONS_FILE, JSON.stringify([], null, 2), 'utf-8');
@@ -58,11 +59,7 @@ export function registerAuthTests(getBaseUrl) {
       return data.file;
     }
 
-    /* =========================================================================
-     * SECTION 1: Registration and Accounts
-     * ========================================================================= */
     await t.test('Section 1: Registration and Accounts', async (sub) => {
-      // 1. Successful registration
       await sub.test('1. Successful registration creates account and returns 201', async () => {
         const res = await fetch(`${getBaseUrl()}/api/auth/register`, {
           method: 'POST',
@@ -82,7 +79,6 @@ export function registerAuthTests(getBaseUrl) {
         aliceCookie = cookieHeader.split(';')[0];
       });
 
-      // 2. Duplicate email rejection
       await sub.test('2. Duplicate exact email registration is rejected with 409', async () => {
         const res = await fetch(`${getBaseUrl()}/api/auth/register`, {
           method: 'POST',
@@ -94,7 +90,6 @@ export function registerAuthTests(getBaseUrl) {
         assert.ok(data.error.includes('already exists'));
       });
 
-      // 3. Duplicate rejection when capitalization differs
       await sub.test('3. Duplicate rejection when capitalization differs', async () => {
         const res = await fetch(`${getBaseUrl()}/api/auth/register`, {
           method: 'POST',
@@ -104,7 +99,6 @@ export function registerAuthTests(getBaseUrl) {
         assert.equal(res.status, 409);
       });
 
-      // 4. Duplicate rejection when surrounding whitespace differs
       await sub.test('4. Duplicate rejection when surrounding whitespace differs', async () => {
         const res = await fetch(`${getBaseUrl()}/api/auth/register`, {
           method: 'POST',
@@ -114,7 +108,6 @@ export function registerAuthTests(getBaseUrl) {
         assert.equal(res.status, 409);
       });
 
-      // 5. Password is not stored in plaintext
       await sub.test('5. Passwords are never stored in plaintext', async () => {
         const usersRaw = await fs.readFile(USERS_FILE, 'utf-8');
         assert.equal(usersRaw.includes('Password1234!'), false, 'Plaintext password must not appear in users.json');
@@ -139,7 +132,6 @@ export function registerAuthTests(getBaseUrl) {
         bobCookie = cookieHeader.split(';')[0];
       });
 
-      // 6. Correct password login succeeds
       await sub.test('6. Correct password login succeeds and returns session cookie', async () => {
         const res = await fetch(`${getBaseUrl()}/api/auth/login`, {
           method: 'POST',
@@ -155,7 +147,6 @@ export function registerAuthTests(getBaseUrl) {
         aliceCookie = cookieHeader.split(';')[0];
       });
 
-      // 7. Incorrect password login fails
       await sub.test('7. Incorrect password login fails with generic 401', async () => {
         const res = await fetch(`${getBaseUrl()}/api/auth/login`, {
           method: 'POST',
@@ -167,7 +158,6 @@ export function registerAuthTests(getBaseUrl) {
         assert.equal(data.error, 'Invalid email or password.');
       });
 
-      // 8. Invalid input is rejected safely
       await sub.test('8. Invalid input rejected safely (short password, bad email syntax)', async () => {
         // Password too short (< 8)
         const shortRes = await fetch(`${getBaseUrl()}/api/auth/register`, {
@@ -186,7 +176,6 @@ export function registerAuthTests(getBaseUrl) {
         assert.equal(badEmailRes.status, 400);
       });
 
-      // 9. Repeated failed logins are rate-limited
       await sub.test('9. Repeated failed logins are rate-limited with 429', async () => {
         const bruteEmail = 'victim_brute@example.com';
         // 5 consecutive failed attempts
@@ -210,11 +199,7 @@ export function registerAuthTests(getBaseUrl) {
       });
     });
 
-    /* =========================================================================
-     * SECTION 2: Sessions
-     * ========================================================================= */
     await t.test('Section 2: Persistent Server Sessions', async (sub) => {
-      // 10. Successful login creates a server-managed session
       await sub.test('10. Successful login creates a server-managed session stored in sessions.json', async () => {
         const sessionsRaw = await fs.readFile(SESSIONS_FILE, 'utf-8');
         const sessions = JSON.parse(sessionsRaw);
@@ -226,7 +211,6 @@ export function registerAuthTests(getBaseUrl) {
         assert.ok(found.expiresAt);
       });
 
-      // 11. Authenticated session remains valid within configured lifetime
       await sub.test('11. Authenticated session remains valid on /api/auth/me', async () => {
         const res = await fetch(`${getBaseUrl()}/api/auth/me`, {
           headers: { Cookie: aliceCookie }
@@ -237,7 +221,6 @@ export function registerAuthTests(getBaseUrl) {
         assert.equal(data.user.email, 'alice@example.com');
       });
 
-      // 12. Expired sessions are rejected
       await sub.test('12. Expired sessions are rejected and invalidated', async () => {
         // Create a temporary expired session directly in sessions.json
         const sessions = JSON.parse(await fs.readFile(SESSIONS_FILE, 'utf-8'));
@@ -258,7 +241,6 @@ export function registerAuthTests(getBaseUrl) {
         assert.equal(data.authenticated, false, 'Expired session must not be authenticated');
       });
 
-      // 13. Logout invalidates the session
       await sub.test('13. Logout invalidates the session on the server', async () => {
         // Log in to get a dedicated session to log out
         const loginRes = await fetch(`${getBaseUrl()}/api/auth/login`, {
@@ -280,7 +262,6 @@ export function registerAuthTests(getBaseUrl) {
         assert.equal(sessions.some((s) => s.id === sessionId), false, 'Logged out session must be destroyed');
       });
 
-      // 14. An invalidated session cannot access restricted content
       await sub.test('14. An invalidated session cannot access /api/auth/me', async () => {
         const fakeCookie = `secushare_session=${crypto.randomBytes(32).toString('base64url')}`;
         const res = await fetch(`${getBaseUrl()}/api/auth/me`, {
@@ -290,7 +271,6 @@ export function registerAuthTests(getBaseUrl) {
         assert.equal(data.authenticated, false);
       });
 
-      // 15. The session cookie has appropriate security attributes
       await sub.test('15. Session cookie sets HttpOnly and SameSite attributes', async () => {
         const res = await fetch(`${getBaseUrl()}/api/auth/login`, {
           method: 'POST',
@@ -305,11 +285,7 @@ export function registerAuthTests(getBaseUrl) {
       });
     });
 
-    /* =========================================================================
-     * SECTION 3: Public Links
-     * ========================================================================= */
     await t.test('Section 3: Public Links Remain Public', async (sub) => {
-      // 16. Anonymous upload still works
       await sub.test('16. Anonymous upload without login works', async () => {
         const file = await uploadTestFile({ filename: 'public_anon.txt' });
         assert.ok(file.shareToken);
@@ -317,7 +293,6 @@ export function registerAuthTests(getBaseUrl) {
         publicToken = file.shareToken;
       });
 
-      // 17. A public link remains accessible without login
       await sub.test('17. Public link can be downloaded without login', async () => {
         const metaRes = await fetch(`${getBaseUrl()}/api/files/${publicToken}`);
         assert.equal(metaRes.status, 200);
@@ -330,7 +305,6 @@ export function registerAuthTests(getBaseUrl) {
         assert.equal(text, sampleContent);
       });
 
-      // 18. A public link with a configured file password still requires that password
       await sub.test('18. Public link with file password requires password from anonymous visitor', async () => {
         const file = await uploadTestFile({ password: 'FilePassword123!', filename: 'public_pwd.txt' });
         
@@ -348,7 +322,6 @@ export function registerAuthTests(getBaseUrl) {
         assert.equal(await okRes.text(), sampleContent);
       });
 
-      // 19. Public links remain subject to expiry and download limits
       await sub.test('19. Public one-time link enforces download limit', async () => {
         const file = await uploadTestFile({ downloadPolicy: 'one_time', filename: 'public_onetime.txt' });
         
@@ -362,9 +335,6 @@ export function registerAuthTests(getBaseUrl) {
       });
     });
 
-    /* =========================================================================
-     * SECTION 4: Restricted Links & Recipient Authorization
-     * ========================================================================= */
     await t.test('Section 4: Restricted Links and Recipient Authorization', async (sub) => {
       // Setup restricted file for Alice only
       const restrictedFile = await uploadTestFile({
@@ -374,7 +344,6 @@ export function registerAuthTests(getBaseUrl) {
       restrictedToken = restrictedFile.shareToken;
       assert.equal(restrictedFile.isRestricted, true);
 
-      // 20. Logged-out visitor cannot download restricted file directly
       await sub.test('20. Logged-out visitor cannot download restricted file (401)', async () => {
         const res = await fetch(`${getBaseUrl()}/api/files/${restrictedToken}/download`);
         assert.equal(res.status, 401);
@@ -382,7 +351,6 @@ export function registerAuthTests(getBaseUrl) {
         assert.equal(data.authRequired, true);
       });
 
-      // 21. Logged-out visitor is directed to login/register on metadata endpoint
       await sub.test('21. Logged-out visitor receives 401 with redirectUrl on metadata query', async () => {
         const res = await fetch(`${getBaseUrl()}/api/files/${restrictedToken}`);
         assert.equal(res.status, 401);
@@ -391,13 +359,11 @@ export function registerAuthTests(getBaseUrl) {
         assert.ok(data.redirectUrl.includes('/login?redirect='));
       });
 
-      // 22. Successful authentication returns visitor to original share link
       await sub.test('22. Redirect flow preserves valid relative destination', () => {
         const target = validateRedirectUrl(`/share/${restrictedToken}`);
         assert.equal(target, `/share/${restrictedToken}`);
       });
 
-      // 23. Redirect validation rejects external or unsafe destinations
       await sub.test('23. Redirect validation prevents open redirects', () => {
         assert.equal(validateRedirectUrl('https://evil.com'), '/');
         assert.equal(validateRedirectUrl('//evil.com'), '/');
@@ -408,7 +374,6 @@ export function registerAuthTests(getBaseUrl) {
         assert.equal(validateRedirectUrl(null), '/');
       });
 
-      // 24. Authorized user can access restricted link
       await sub.test('24. Authorized user (Alice) can access metadata and download file', async () => {
         const metaRes = await fetch(`${getBaseUrl()}/api/files/${restrictedToken}`, {
           headers: { Cookie: aliceCookie }
@@ -426,7 +391,6 @@ export function registerAuthTests(getBaseUrl) {
         assert.equal(content, sampleContent);
       });
 
-      // 25. Unauthorized logged-in user is denied
       await sub.test('25. Unauthorized logged-in user (Bob) receives 403 Forbidden', async () => {
         const metaRes = await fetch(`${getBaseUrl()}/api/files/${restrictedToken}`, {
           headers: { Cookie: bobCookie }
@@ -443,7 +407,6 @@ export function registerAuthTests(getBaseUrl) {
         assert.equal(dl.accessDenied, true);
       });
 
-      // 26. Email matching ignores capitalization and surrounding whitespace
       await sub.test('26. Recipient authorization ignores case and whitespace differences', async () => {
         // Upload restricted file specifying mixed-case and whitespace
         const file = await uploadTestFile({
@@ -458,7 +421,6 @@ export function registerAuthTests(getBaseUrl) {
         assert.equal(dlRes.status, 200);
       });
 
-      // 27. Pending recipient permission works after matching user registers
       await sub.test('27. Pending recipient permission works when user registers later', async () => {
         const futureEmail = 'charlie@future-recipient.com';
         // Upload restricted to Charlie before Charlie registers
@@ -546,7 +508,6 @@ export function registerAuthTests(getBaseUrl) {
         assert.equal(await correctRes.text(), sampleContent);
       });
 
-      // 31. Protected file bytes are not returned when authorization fails
       await sub.test('31. Protected file bytes are never returned on failed authorization', async () => {
         const failRes = await fetch(`${getBaseUrl()}/api/files/${restrictedToken}/download`, {
           headers: { Cookie: bobCookie }
@@ -557,11 +518,7 @@ export function registerAuthTests(getBaseUrl) {
       });
     });
 
-    /* =========================================================================
-     * SECTION 5: Existing Security and Lifecycle Behavior
-     * ========================================================================= */
     await t.test('Section 5: Existing Security and Lifecycle Preservation', async (sub) => {
-      // 32. Expiry enforcement still works
       await sub.test('32. Expiry enforcement rejects expired restricted files with 410', async () => {
         const file = await uploadTestFile({ recipients: 'alice@example.com' });
         const record = await getFileByToken(file.shareToken);
@@ -576,7 +533,6 @@ export function registerAuthTests(getBaseUrl) {
         assert.equal(res.status, 410);
       });
 
-      // 33. Download limits still work on restricted files
       await sub.test('33. Download limits still enforced on restricted files', async () => {
         const file = await uploadTestFile({
           recipients: 'alice@example.com',
@@ -603,7 +559,6 @@ export function registerAuthTests(getBaseUrl) {
         assert.equal(res3.status, 410);
       });
 
-      // 34. One-time download behavior works on restricted files
       await sub.test('34. One-time download allows single access on restricted file', async () => {
         const file = await uploadTestFile({
           recipients: 'alice@example.com',
@@ -621,7 +576,6 @@ export function registerAuthTests(getBaseUrl) {
         assert.equal(res2.status, 410);
       });
 
-      // 35. Concurrent requests cannot bypass download limits
       await sub.test('35. Concurrent requests cannot bypass one-time download limit', async () => {
         const file = await uploadTestFile({
           recipients: 'alice@example.com',
@@ -643,7 +597,6 @@ export function registerAuthTests(getBaseUrl) {
         assert.equal(exhaustedCount, 5, 'All other concurrent downloads must receive 410');
       });
 
-      // 36. Existing encryption and integrity verification preserved
       await sub.test('36. AES-256-GCM encryption at rest and SHA-256 integrity preserved', async () => {
         const file = await uploadTestFile({ recipients: 'alice@example.com' });
         const record = await getFileByToken(file.shareToken);
@@ -652,7 +605,6 @@ export function registerAuthTests(getBaseUrl) {
         assert.ok(record.integrity.expectedDigest);
       });
 
-      // 37. Integrity failure prevents delivery
       await sub.test('37. Tampered SHA-256 digest prevents file delivery', async () => {
         const file = await uploadTestFile({ recipients: 'alice@example.com' });
         const record = await getFileByToken(file.shareToken);
@@ -671,13 +623,11 @@ export function registerAuthTests(getBaseUrl) {
         assert.equal(res.status, 500);
       });
 
-      // 38. The existing not_scanned state is not presented as malware-free
       await sub.test('38. not_scanned scan status preserved and not reported clean', async () => {
         const file = await uploadTestFile({ filename: 'scan_check.txt' });
         assert.equal(file.scanStatus, SCAN_STATUS.NOT_SCANNED);
       });
 
-      // 39. Existing scanner gate is not bypassed (INFECTED status blocks download)
       await sub.test('39. INFECTED file is blocked by accessService with 403', async () => {
         const file = await uploadTestFile({ recipients: 'alice@example.com' });
         const record = await getFileByToken(file.shareToken);
@@ -691,7 +641,6 @@ export function registerAuthTests(getBaseUrl) {
         assert.equal(res.status, 403);
       });
 
-      // 40. There are no new routes that allow editing or disabling a generated share link
       await sub.test('40. Share links are immutable: PATCH, PUT, DELETE routes do not exist (404)', async () => {
         const patchRes = await fetch(`${getBaseUrl()}/api/files/${restrictedToken}`, {
           method: 'PATCH',

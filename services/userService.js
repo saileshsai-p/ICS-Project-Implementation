@@ -1,12 +1,9 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { fileURLToPath } from 'node:url';
 import { hashPassword, verifyPassword } from './passwordService.js';
+import { DATA_DIR } from './config.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const DATA_DIR = path.resolve(__dirname, '../data');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
 const USERS_TMP_FILE = path.join(DATA_DIR, 'users.tmp.json');
 

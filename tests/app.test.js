@@ -2,20 +2,25 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { app, startServer } from '../server.js';
 import { getAllFiles, updateFileRecord } from '../services/metadataService.js';
 import { getSafeFilePath, cleanupFile } from '../services/fileService.js';
 import { SCAN_STATUS } from '../services/malwareScanner.js';
 import crypto from 'node:crypto';
+import { DATA_DIR, assertDisposableDataLocations } from '../services/config.js';
 import { registerV2Tests } from './v2.test.js';
 import { registerAuthTests } from './auth_authorization.test.js';
+import { registerKeyManagementTests } from './keyManagement.test.js';
+import { registerResilienceTests } from './resilience.test.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// Fail fast unless tests/setup.mjs has redirected every persistent location to
+// a disposable directory. Without this, the suites below would read and modify
+// real uploads, metadata, users and sessions.
+assertDisposableDataLocations('The automated test suite');
 
-// Configure test master encryption key (32 bytes)
+// Configure test master encryption key (32 bytes). setup.mjs normally supplies
+// a disposable key already; this keeps direct invocation working.
 process.env.FILE_ENCRYPTION_MASTER_KEY =
   process.env.FILE_ENCRYPTION_MASTER_KEY || crypto.randomBytes(32).toString('hex');
 
@@ -41,7 +46,6 @@ test('Suite: Secure File Sharing Baseline Implementation', async (t) => {
   let passwordProtectedToken = null;
   let sampleContent = 'Antigravity secure file sharing test content payload 1234567890';
 
-  // Scenario 1: Upload a valid file
   await t.test('1. Upload a valid file', async () => {
     const formData = new FormData();
     const blob = new Blob([sampleContent], { type: 'text/plain' });
@@ -64,7 +68,6 @@ test('Suite: Secure File Sharing Baseline Implementation', async (t) => {
     noPasswordToken = data.file.shareToken;
   });
 
-  // Scenario 2: Reject a missing file
   await t.test('2. Reject a missing file', async () => {
     const formData = new FormData();
     formData.append('expiry', '24h');
@@ -79,7 +82,6 @@ test('Suite: Secure File Sharing Baseline Implementation', async (t) => {
     assert.ok(data.error.includes('No file uploaded'));
   });
 
-  // Scenario 3: Reject a file that exceeds the configured size limit
   await t.test('3. Reject a file that exceeds the configured size limit (50MB)', async () => {
     // Generate a payload slightly larger than 50MB (50 * 1024 * 1024 + 1024 bytes)
     // To be fast and efficient in memory, create a sparse or repeated blob
@@ -104,7 +106,6 @@ test('Suite: Secure File Sharing Baseline Implementation', async (t) => {
     assert.ok(data.error.includes('exceeds the maximum permitted limit'));
   });
 
-  // Scenario 4: Upload a file without a password
   await t.test('4. Upload a file without a password', async () => {
     const formData = new FormData();
     const blob = new Blob(['No password file contents'], { type: 'text/plain' });
@@ -128,7 +129,6 @@ test('Suite: Secure File Sharing Baseline Implementation', async (t) => {
     assert.equal(record.passwordSalt, null);
   });
 
-  // Scenario 5: Upload a file with a password
   await t.test('5. Upload a file with a password', async () => {
     const formData = new FormData();
     const blob = new Blob(['Top secret confidential content'], { type: 'text/plain' });
@@ -157,7 +157,6 @@ test('Suite: Secure File Sharing Baseline Implementation', async (t) => {
     assert.ok(!JSON.stringify(record).includes('SuperSecret123!'), 'Plaintext password must never be stored');
   });
 
-  // Scenario 6: Download with the correct password
   await t.test('6. Download with the correct password', async () => {
     assert.ok(passwordProtectedToken);
 
@@ -172,7 +171,6 @@ test('Suite: Secure File Sharing Baseline Implementation', async (t) => {
     assert.equal(downloadedText, 'Top secret confidential content');
   });
 
-  // Scenario 7: Reject an incorrect password
   await t.test('7. Reject an incorrect password', async () => {
     assert.ok(passwordProtectedToken);
 
@@ -187,7 +185,6 @@ test('Suite: Secure File Sharing Baseline Implementation', async (t) => {
     assert.equal(data.error, 'Incorrect password.');
   });
 
-  // Scenario 8: Reject an expired link
   await t.test('8. Reject an expired link', async () => {
     // Create an expired file by setting expiresAt to the past
     const formData = new FormData();
@@ -219,7 +216,6 @@ test('Suite: Secure File Sharing Baseline Implementation', async (t) => {
     assert.ok(dlData.error.includes('expired'));
   });
 
-  // Scenario 9: Reject an invalid or nonexistent token
   await t.test('9. Reject an invalid or nonexistent token', async () => {
     const invalidToken = 'nonexistent-token-1234567890';
 
@@ -230,7 +226,6 @@ test('Suite: Secure File Sharing Baseline Implementation', async (t) => {
     assert.equal(dlRes.status, 404, 'Should return 404 for invalid token download');
   });
 
-  // Scenario 10: Reject a request for a missing stored file
   await t.test('10. Reject a request for a missing stored file', async () => {
     const formData = new FormData();
     const blob = new Blob(['File will be deleted from disk'], { type: 'text/plain' });
@@ -256,7 +251,6 @@ test('Suite: Secure File Sharing Baseline Implementation', async (t) => {
     assert.ok(dlData.error.includes('could not be found in storage'));
   });
 
-  // Scenario 11: Confirm that uploaded files cannot be accessed through public static URLs
   await t.test('11. Confirm that uploaded files cannot be accessed through public static URLs', async () => {
     assert.ok(noPasswordToken);
     const all = await getAllFiles();
@@ -271,15 +265,14 @@ test('Suite: Secure File Sharing Baseline Implementation', async (t) => {
     assert.equal(directRes2.status, 404, 'Direct access to /files/ must be 404');
   });
 
-  // Scenario 12: Confirm that metadata persists across application restarts
   await t.test('12. Confirm that metadata persists across application restarts', async () => {
     // Read from disk fresh
     const beforeRecords = await getAllFiles();
     assert.ok(beforeRecords.length > 0, 'Metadata store should have records');
 
-    // Simulate restart by inspecting the raw data/metadata.json file on disk
-    const dataDir = path.resolve(__dirname, '../data/metadata.json');
-    const rawData = await fs.readFile(dataDir, 'utf-8');
+    // Simulate restart by inspecting the raw metadata.json file on disk
+    const metadataFile = path.join(DATA_DIR, 'metadata.json');
+    const rawData = await fs.readFile(metadataFile, 'utf-8');
     const parsed = JSON.parse(rawData);
 
     assert.equal(parsed.length, beforeRecords.length, 'Stored records match memory records on disk');
@@ -287,7 +280,6 @@ test('Suite: Secure File Sharing Baseline Implementation', async (t) => {
     assert.ok(sample, 'Saved share token must persist in metadata.json file');
   });
 
-  // Scenario 13: Confirm that files are marked not_scanned in this version
   await t.test('13. Confirm that files are marked not_scanned in this version', async () => {
     const metaRes = await fetch(`${baseUrl}/api/files/${noPasswordToken}`);
     const metaData = await metaRes.json();
@@ -299,7 +291,6 @@ test('Suite: Secure File Sharing Baseline Implementation', async (t) => {
     assert.equal(record.scanStatus, 'not_scanned', 'Record scanStatus must be not_scanned');
   });
 
-  // Scenario 14: Confirm that no file is incorrectly reported as malware-free
   await t.test('14. Confirm that no file is incorrectly reported as malware-free', async () => {
     const all = await getAllFiles();
     for (const file of all) {
@@ -308,7 +299,6 @@ test('Suite: Secure File Sharing Baseline Implementation', async (t) => {
     }
   });
 
-  // Scenario 15: Flexible expiry allows 1 minute expiration
   await t.test('15. Flexible expiry allows 1 minute expiration', async () => {
     const formData = new FormData();
     const blob = new Blob(['One minute test'], { type: 'text/plain' });
@@ -328,7 +318,6 @@ test('Suite: Secure File Sharing Baseline Implementation', async (t) => {
     assert.ok(diffSeconds >= 55 && diffSeconds <= 65, `Expiry should be ~60s, got ${diffSeconds}s`);
   });
 
-  // Scenario 16: Flexible expiry allows any number of days
   await t.test('16. Flexible expiry allows custom number of days (e.g. 14 days)', async () => {
     const formData = new FormData();
     const blob = new Blob(['Fourteen days test'], { type: 'text/plain' });
@@ -355,3 +344,9 @@ registerV2Tests(() => baseUrl);
 
 // Register User Authentication and Recipient Authorization tests
 registerAuthTests(() => baseUrl);
+
+// Register master key lifecycle tests (isolated child processes, disposable keys)
+registerKeyManagementTests();
+
+// Register cleanup-failure, tamper-matrix and isolation-safeguard tests
+registerResilienceTests(() => baseUrl);

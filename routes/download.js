@@ -4,7 +4,11 @@ import { canDownload } from '../services/accessService.js';
 import { passwordRateLimiter } from '../middleware/rateLimiter.js';
 import { decryptStorageToTemp, cleanupTempDecryptedFile } from '../services/encryptionService.js';
 import { calculateFileSha256, verifySha256Digest } from '../services/fileIntegrityService.js';
-import { acquireDownloadLease } from '../services/operationCoordinator.js';
+import {
+  acquireDownloadLease,
+  registerActiveTempFile,
+  releaseActiveTempFile
+} from '../services/operationCoordinator.js';
 import { normalizeEmail } from '../services/userService.js';
 
 const router = express.Router();
@@ -145,21 +149,63 @@ async function processDownload(req, res, password = null) {
   let fileDeliveryPath = access.filePath;
   let releaseLease = null;
 
+  // 2. Acquire the read lease BEFORE touching storage. The lease must cover the
+  //    whole operation - decryption reads the ciphertext, so a cleanup cycle
+  //    running between authorization and decryption would otherwise be able to
+  //    unlink the file mid-read.
+  releaseLease = acquireDownloadLease(record.id);
+
+  /**
+   * Releases the lease and discards any decrypted temporary file, then sends a
+   * failure response. Every failure path must go through this so that a refused
+   * download can never leak a lease (which would block cleanup forever) or
+   * leave plaintext staged on disk.
+   */
+  const failClosed = async (status, errorMessage) => {
+    if (tempDecryptedPath) {
+      releaseActiveTempFile(tempDecryptedPath);
+      await cleanupTempDecryptedFile(tempDecryptedPath);
+      tempDecryptedPath = null;
+    }
+    if (releaseLease) {
+      releaseLease();
+      releaseLease = null;
+    }
+    return res.status(status).json({ error: errorMessage });
+  };
+
   try {
-    // 2. Cryptographic decryption and integrity verification
+    // 3. Cryptographic decryption and integrity verification
     if (record.encryption && record.encryption.enabled) {
-      // Decrypt ciphertext from storage into a private temporary file
-      tempDecryptedPath = await decryptStorageToTemp(record.storedName, record.encryption);
+      // Decrypt ciphertext from storage into a private temporary file.
+      // Any GCM authentication or key-unwrap failure throws here and is handled
+      // by the catch block below; no bytes reach the client.
+      try {
+        tempDecryptedPath = await decryptStorageToTemp(record.storedName, record.encryption);
+        registerActiveTempFile(tempDecryptedPath);
+      } catch (cryptoErr) {
+        // Log internally for diagnostics. Never log key material, plaintext or
+        // the decrypted path contents - only the record identity and reason.
+        console.error(
+          `[Download] Decryption/authentication failure for record ${record.id} ` +
+          `(storedName=${record.storedName}): ${cryptoErr.message}`
+        );
+        return failClosed(500, 'The requested file could not be verified and was not delivered.');
+      }
 
       // Verify SHA-256 integrity of the recovered plaintext against the upload-time digest
       const actualDigest = await calculateFileSha256(tempDecryptedPath);
 
       if (!record.integrity || !verifySha256Digest(actualDigest, record.integrity.expectedDigest)) {
-        await cleanupTempDecryptedFile(tempDecryptedPath);
-        tempDecryptedPath = null;
-        return res.status(500).json({
-          error: 'File integrity verification failed. The decrypted content does not match the expected cryptographic digest.'
-        });
+        console.error(
+          `[Download] SHA-256 integrity mismatch for record ${record.id} ` +
+          `(storedName=${record.storedName}): decrypted content does not match the stored digest. ` +
+          'File was NOT delivered.'
+        );
+        return failClosed(
+          500,
+          'File integrity verification failed. The decrypted content does not match the expected cryptographic digest.'
+        );
       }
 
       fileDeliveryPath = tempDecryptedPath;
@@ -167,27 +213,18 @@ async function processDownload(req, res, password = null) {
       // Unencrypted legacy file with integrity record
       const actualDigest = await calculateFileSha256(access.filePath);
       if (!verifySha256Digest(actualDigest, record.integrity.expectedDigest)) {
-        return res.status(500).json({
-          error: 'File integrity verification failed.'
-        });
+        console.error(
+          `[Download] SHA-256 integrity mismatch for unencrypted legacy record ${record.id}. ` +
+          'File was NOT delivered.'
+        );
+        return failClosed(500, 'File integrity verification failed.');
       }
     }
-
-    // 3. Acquire read lease to prevent cleanup worker from deleting file during streaming
-    releaseLease = acquireDownloadLease(record.id);
 
     // 4. Atomically consume download allowance immediately before streaming begins
     const consumption = await consumeDownloadAllowance(record.id);
     if (!consumption.success) {
-      if (tempDecryptedPath) {
-        await cleanupTempDecryptedFile(tempDecryptedPath);
-        tempDecryptedPath = null;
-      }
-      if (releaseLease) {
-        releaseLease();
-        releaseLease = null;
-      }
-      return res.status(consumption.status || 410).json({ error: consumption.reason });
+      return failClosed(consumption.status || 410, consumption.reason);
     }
 
     // 5. Setup cleanup for response completion or premature client disconnection
@@ -196,6 +233,7 @@ async function processDownload(req, res, password = null) {
       if (cleanedUp) return;
       cleanedUp = true;
       if (tempDecryptedPath) {
+        releaseActiveTempFile(tempDecryptedPath);
         await cleanupTempDecryptedFile(tempDecryptedPath);
         tempDecryptedPath = null;
       }
@@ -230,7 +268,13 @@ async function processDownload(req, res, password = null) {
     });
 
   } catch (err) {
+    // Log internally for diagnostics; the client sees a generic message only.
+    console.error(
+      `[Download] Failed to prepare record ${record?.id ?? 'unknown'} for delivery: ${err.message}`
+    );
+
     if (tempDecryptedPath) {
+      releaseActiveTempFile(tempDecryptedPath);
       await cleanupTempDecryptedFile(tempDecryptedPath);
     }
     if (releaseLease) {

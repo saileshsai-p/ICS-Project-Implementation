@@ -3,7 +3,6 @@ import { registerUser, authenticateUser } from '../services/userService.js';
 import { createSession, destroySession } from '../services/sessionService.js';
 import { setSessionCookie, clearSessionCookie } from '../middleware/authMiddleware.js';
 import { authRateLimiter } from '../middleware/rateLimiter.js';
-import { validateRedirectUrl } from '../services/authService.js';
 
 const router = express.Router();
 
